@@ -17,18 +17,18 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh api repos/vincentkoc/tsc-ts/actions/runs/39092634359 > "$RUNNER_TEMP/producer.json"
+          gh api repos/vincentkoc/tsc-ts/actions/runs/39093115080 > "$RUNNER_TEMP/producer.json"
           node -e '
             const assert = require("node:assert/strict");
             const run = require(process.argv[1]);
-            assert.equal(run.head_sha, "cadf8a3682c24ccf76e072bdba86c9d63ed9cb48");
+            assert.equal(run.head_sha, "73734dba98552bdb7d0d90735be3882e6bed7f63");
             assert.equal(run.run_attempt, 1);
             assert.equal(run.conclusion, "success");
             assert.equal(run.repository.full_name, "vincentkoc/tsc-ts");
           ' "$RUNNER_TEMP/producer.json"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: cadf8a3682c24ccf76e072bdba86c9d63ed9cb48
+          ref: 73734dba98552bdb7d0d90735be3882e6bed7f63
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -43,7 +43,7 @@ jobs:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           repository: vincentkoc/tsc-ts
-          run-id: 39092634359
+          run-id: 39093115080
           name: build
           github-token: ${{ github.token }}
           path: ${{ runner.temp }}/compiler-build
@@ -51,7 +51,7 @@ jobs:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           repository: vincentkoc/tsc-ts
-          run-id: 39092634359
+          run-id: 39093115080
           name: native
           github-token: ${{ github.token }}
           path: ${{ runner.temp }}/compiler-native
@@ -60,7 +60,7 @@ jobs:
         run: |
           mkdir "$RUNNER_TEMP/evidence"
           cp "$RUNNER_TEMP/producer.json" "$RUNNER_TEMP/evidence/"
-          test "$(git rev-parse HEAD)" = cadf8a3682c24ccf76e072bdba86c9d63ed9cb48
+          test "$(git rev-parse HEAD)" = 73734dba98552bdb7d0d90735be3882e6bed7f63
           test "$(git -C baseline rev-parse HEAD)" = f43cb6bc130db3e451a28a0a49f3c7e2ed7a26f5
           tar -xf "$RUNNER_TEMP/compiler-build/build.tar" packages/tsc-ts/dist
           tar -xf "$RUNNER_TEMP/compiler-native/native.tar" packages/tsc-ts/dist/tsc
