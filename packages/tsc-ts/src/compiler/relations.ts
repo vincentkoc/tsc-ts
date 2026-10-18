@@ -234,9 +234,8 @@ export const enum RelationComparisonResult {
   ReportsUnmeasurable = 1 << 3,
   ReportsUnreliable = 1 << 4,
   ComplexityOverflow = 1 << 5,
-  StackDepthOverflow = 1 << 6,
   ReportsMask = ReportsUnmeasurable | ReportsUnreliable,
-  Overflow = ComplexityOverflow | StackDepthOverflow,
+  Overflow = ComplexityOverflow,
 }
 
 /**
@@ -1012,20 +1011,13 @@ export function checkTypeRelatedTo(
   if (r.overflow) {
     // Remember the overflow so it isn't attempted again.
     const key = getRelationKey(c, source, target, IntersectionState.None, relation === c.identityRelation, false).key;
-    relation.set(
-      key,
-      RelationComparisonResult.Failed |
-        (r.relationCount <= 0
-          ? RelationComparisonResult.ComplexityOverflow
-          : RelationComparisonResult.StackDepthOverflow),
-    );
-    const message =
-      r.relationCount <= 0
-        ? Diagnostics.Excessive_complexity_comparing_types_0_and_1
-        : Diagnostics.Excessive_stack_depth_comparing_types_0_and_1;
+    relation.set(key, RelationComparisonResult.Failed | RelationComparisonResult.ComplexityOverflow);
     reportDiagnostic(
       c,
-      createDiagnosticForNode(errorNode ?? c.currentNode, message, [typeToString(c, source), typeToString(c, target)]),
+      createDiagnosticForNode(errorNode ?? c.currentNode, Diagnostics.Excessive_complexity_comparing_types_0_and_1, [
+        typeToString(c, source),
+        typeToString(c, target),
+      ]),
       diagnosticOutput,
     );
   } else if (r.errorChain !== undefined) {
@@ -1645,7 +1637,7 @@ export class Relater extends TypeComparer {
 
   /**
    * Relates possibly recursive types: uses the global cache, assumes related when already
-   * comparing the pair, assumes related for deeply nested expansions, and overflows at depth 100.
+   * comparing the pair, and assumes related for deeply nested expansions or at depth 100.
    */
   recursiveTypeRelatedTo(
     source: Type,
@@ -1671,11 +1663,10 @@ export class Relater extends TypeComparer {
         c.reliabilityFlags |=
           entry & (RelationComparisonResult.ReportsUnmeasurable | RelationComparisonResult.ReportsUnreliable);
         if (reportErrors && (entry & RelationComparisonResult.Overflow) !== 0) {
-          const message =
-            (entry & RelationComparisonResult.ComplexityOverflow) !== 0
-              ? Diagnostics.Excessive_complexity_comparing_types_0_and_1
-              : Diagnostics.Excessive_stack_depth_comparing_types_0_and_1;
-          this.reportError(message, [typeToString(c, source), typeToString(c, target)]);
+          this.reportError(Diagnostics.Excessive_complexity_comparing_types_0_and_1, [
+            typeToString(c, source),
+            typeToString(c, target),
+          ]);
         }
         return (entry & RelationComparisonResult.Succeeded) !== 0 ? Ternary.True : Ternary.False;
       }
@@ -1700,8 +1691,9 @@ export class Relater extends TypeComparer {
     const sourceDepth = this.sourceDepth;
     const targetDepth = this.targetDepth;
     if (sourceDepth === 100 || targetDepth === 100) {
-      this.overflow = true;
-      return Ternary.False;
+      // Backstop recursion that the identity heuristic did not catch. As upstream, types
+      // still structurally related at this depth remain provisionally related, not overflowed.
+      return Ternary.Maybe;
     }
     const maybeStart = this.maybeKeys.length;
     this.maybeKeys.push(id);
@@ -3594,7 +3586,6 @@ export class Relater extends TypeComparer {
       case Diagnostics.Object_literal_may_only_specify_known_properties_but_0_does_not_exist_in_type_1_Did_you_mean_to_write_2:
         return;
       case Diagnostics.Excessive_complexity_comparing_types_0_and_1:
-      case Diagnostics.Excessive_stack_depth_comparing_types_0_and_1:
       case Diagnostics.The_type_0_is_readonly_and_cannot_be_assigned_to_the_mutable_type_1:
         if (this.chainArgsMatch(generalizedSourceType, targetType, undefined)) return;
         break;
@@ -4318,63 +4309,63 @@ export function isDeeplyNestedType(
   maxDepth: number,
 ): boolean {
   if (depth < maxDepth) return false;
-  if (
-    (t.objectFlags & ObjectFlags.InstantiatedMapped) === ObjectFlags.InstantiatedMapped &&
-    (t.flags & TypeFlags.Object) !== 0
-  )
-    t = getMappedTargetWithSymbol(c, t);
-  if ((t.flags & TypeFlags.Intersection) !== 0)
-    for (const u of typesOf(t)) if (isDeeplyNestedType(c, u, stack, depth, maxDepth)) return true;
-  const identity = getRecursionIdentity(t);
-  let count = 0;
-  let lastTypeId = 0;
-  for (let i = 0; i < depth; i++) {
-    const s = stack[i]!;
-    if (hasMatchingRecursionIdentity(c, s, identity)) {
-      if (s.id >= lastTypeId) {
-        count++;
-        if (count >= maxDepth) return true;
+  const target = getRecursionIdentityTarget(c, t);
+  if ((target.flags & TypeFlags.Intersection) !== 0) {
+    for (const u of typesOf(target)) if (isDeeplyNestedType(c, u, stack, depth, maxDepth)) return true;
+  } else {
+    const identity = getRecursionIdentityFromTarget(target);
+    let count = 0;
+    let lastTypeId = 0;
+    for (let i = 0; i < depth; i++) {
+      const s = stack[i]!;
+      if (hasMatchingRecursionIdentity(c, s, identity)) {
+        if (s.id >= lastTypeId) {
+          count++;
+          if (count >= maxDepth) return true;
+        }
+        lastTypeId = s.id;
       }
-      lastTypeId = s.id;
     }
   }
   return false;
 }
 
-function getMappedTargetWithSymbol(c: Checker, t: Type): Type {
-  for (;;) {
-    if (
-      (t.objectFlags & ObjectFlags.InstantiatedMapped) === ObjectFlags.InstantiatedMapped &&
-      (t.flags & TypeFlags.Object) !== 0
-    ) {
-      const target = getModifiersTypeFromMappedType(c, t as MappedType);
-      if (
-        target.symbol !== undefined ||
-        ((target.flags & TypeFlags.Intersection) !== 0 && typesOf(target).some((u) => u.symbol !== undefined))
-      ) {
-        t = target;
-        continue;
-      }
-    }
-    return t;
-  }
-}
-
 function hasMatchingRecursionIdentity(c: Checker, t: Type, identity: RecursionId): boolean {
-  if (
-    (t.objectFlags & ObjectFlags.InstantiatedMapped) === ObjectFlags.InstantiatedMapped &&
-    (t.flags & TypeFlags.Object) !== 0
-  )
-    t = getMappedTargetWithSymbol(c, t);
-  if ((t.flags & TypeFlags.Intersection) !== 0) {
-    for (const u of typesOf(t)) if (hasMatchingRecursionIdentity(c, u, identity)) return true;
+  const target = getRecursionIdentityTarget(c, t);
+  if ((target.flags & TypeFlags.Intersection) !== 0) {
+    for (const u of typesOf(target)) if (hasMatchingRecursionIdentity(c, u, identity)) return true;
     return false;
   }
-  return getRecursionIdentity(t) === identity;
+  return getRecursionIdentityFromTarget(target) === identity;
 }
 
 /** An identity shared by instantiations of a type, so infinitely expanding instantiations can be detected. */
-export function getRecursionIdentity(t: Type): RecursionId {
+export function getRecursionIdentity(c: Checker, t: Type): RecursionId {
+  return getRecursionIdentityFromTarget(getRecursionIdentityTarget(c, t));
+}
+
+/**
+ * Indexed accesses and homomorphic mapped types share their underlying object's identity.
+ * Unwrapping symbol-bearing targets keeps explicitly nested object literals distinct.
+ */
+function getRecursionIdentityTarget(c: Checker, t: Type): Type {
+  if ((t.flags & TypeFlags.IndexedAccess) !== 0)
+    return getRecursionIdentityTarget(c, (t as IndexedAccessType).objectType);
+  if (
+    (t.objectFlags & ObjectFlags.InstantiatedMapped) === ObjectFlags.InstantiatedMapped &&
+    (t.flags & TypeFlags.Object) !== 0
+  ) {
+    const target = getModifiersTypeFromMappedType(c, t as MappedType);
+    if (
+      target.symbol !== undefined ||
+      ((target.flags & TypeFlags.Intersection) !== 0 && typesOf(target).some((u) => u.symbol !== undefined))
+    )
+      return getRecursionIdentityTarget(c, target);
+  }
+  return t;
+}
+
+function getRecursionIdentityFromTarget(t: Type): RecursionId {
   if (
     (t.flags & TypeFlags.Object) !== 0 &&
     (t.objectFlags & (ObjectFlags.ObjectLiteral | ObjectFlags.ArrayLiteral)) === 0
@@ -4391,12 +4382,6 @@ export function getRecursionIdentity(t: Type): RecursionId {
       return typeRecursionId((t as TypeReference).target!);
   }
   if ((t.flags & TypeFlags.TypeParameter) !== 0 && t.symbol !== undefined) return symbolRecursionId(t.symbol);
-  if ((t.flags & TypeFlags.IndexedAccess) !== 0) {
-    let objectType = (t as IndexedAccessType).objectType;
-    while ((objectType.flags & TypeFlags.IndexedAccess) !== 0)
-      objectType = (objectType as IndexedAccessType).objectType;
-    return typeRecursionId(objectType);
-  }
   if ((t.flags & TypeFlags.Conditional) !== 0) return nodeRecursionId((t as ConditionalType).root.node);
   return typeRecursionId(t);
 }

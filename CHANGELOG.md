@@ -4,6 +4,7 @@
 
 ### Fixes
 
+- Match TypeScript-Go #4913 when comparing deeply nested types: resolve indexed-access and mapped-type recursion identities consistently, and keep depth-limit comparisons provisional. This avoids false assertion errors for generic prepared-input unions while preserving complexity limits.
 - Preserve regular literal types when narrowing uniform primitive unions, matching TypeScript-Go #4781. This keeps optional string properties narrowed after copying them into mutable objects, without changing mixed-enum or loose-equality behavior.
 
 <!-- release:start -->

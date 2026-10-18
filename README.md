@@ -84,6 +84,8 @@ npm run build:oracle     # tsgo reference builds in packages/tsgo/dist
 
 The corpus scripts are in `packages/tsc-ts/scripts` (`*-corpus.mjs`).
 
+This fork keeps the 7.0.2 reference pins and selectively backports TypeScript-Go #4781 and #4913. Their literal-narrowing and deep-relation behavior has separate regression expectations; these changes are not a full 7.1 compiler upgrade.
+
 ## API server
 
 `tsc-ts --api` serves the same API as TypeScript 7.0.2's `tsc --api`, over stdin and stdout, so tools that drive `tsc --api` (such as scriptc) can run `tsc-ts` instead.
