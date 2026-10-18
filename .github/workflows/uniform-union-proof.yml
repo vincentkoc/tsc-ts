@@ -1,4 +1,4 @@
-name: Pinned noEmit regression contract
+name: Import type instantiation proof
 
 on:
   push:
@@ -6,54 +6,176 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   compare:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
+      - name: Verify candidate producer
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api repos/vincentkoc/tsc-ts/actions/runs/39144449305 > "$RUNNER_TEMP/producer.json"
+          gh api repos/vincentkoc/tsc-ts/actions/artifacts/12142748611 > "$RUNNER_TEMP/artifact.json"
+          node -e '
+            const assert = require("node:assert/strict");
+            const run = require(process.argv[1]);
+            const artifact = require(process.argv[2]);
+            assert.equal(run.head_sha, "68d06984df0d1a9a89657cf44f0f709e15f13403");
+            assert.equal(run.run_attempt, 1);
+            assert.equal(run.conclusion, "success");
+            assert.equal(run.repository.full_name, "vincentkoc/tsc-ts");
+            assert.equal(artifact.workflow_run.id, run.id);
+            assert.equal(artifact.expired, false);
+            assert.equal(artifact.digest, "sha256:6a11c020208c367c598f632f6cc2c8555b5df88de0f8d01e2a1160e691124d00");
+          ' "$RUNNER_TEMP/producer.json" "$RUNNER_TEMP/artifact.json"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: 7e16d1e178b7d33b8382e93c8765f03b185358ac
+          ref: 68d06984df0d1a9a89657cf44f0f709e15f13403
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 24
-      - name: Stage pinned compiler and libraries
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          repository: vincentkoc/tsc-ts
+          run-id: 39144449305
+          artifact-ids: 12142748611
+          merge-multiple: true
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/candidate
+          digest-mismatch: error
+      - name: Stage immutable compilers
         run: |
-          test "$(git rev-parse HEAD)" = 7e16d1e178b7d33b8382e93c8765f03b185358ac
           mkdir "$RUNNER_TEMP/evidence"
+          cp "$RUNNER_TEMP/producer.json" "$RUNNER_TEMP/artifact.json" "$RUNNER_TEMP/evidence/"
+          python3 <<'PY'
+          import hashlib, os, pathlib, tarfile
+          temporary = pathlib.Path(os.environ['RUNNER_TEMP'])
+          archive = temporary / 'candidate/native.tar'
+          assert hashlib.sha256(archive.read_bytes()).hexdigest() == 'b0fa72407c1dcda84d6976bb0452470317d0c5a69d74e8f7d6a3e0184819ee6a'
+          with tarfile.open(archive) as tar:
+              member = tar.getmember('packages/tsc-ts/dist/tsc')
+              assert member.isfile() and member.size < 256 * 1024 * 1024
+              binary = tar.extractfile(member).read()
+          assert hashlib.sha256(binary).hexdigest() == 'd44c8fc87651ea844ae30418a08697c54b5c55213463c5f5eff19b1f7b3d3479'
+          destination = temporary / 'candidate/tsc'
+          destination.write_bytes(binary)
+          destination.chmod(0o755)
+          PY
           node --input-type=module <<'JS'
           import assert from 'node:assert/strict';
           import { createHash } from 'node:crypto';
           import fs from 'node:fs';
-          const response = await fetch('https://registry.npmjs.org/@typescript/typescript-linux-x64/-/typescript-linux-x64-7.1.0-dev.20260928.1.tgz', { signal: AbortSignal.timeout(120000) });
-          assert.equal(response.ok, true);
-          const bytes = Buffer.from(await response.arrayBuffer());
-          assert.equal(createHash('sha512').update(bytes).digest('base64'), 'aURCjT15k41CKK0+rBGHptWXt+pzwzsgUpiQ8GBWIwUGTt3Q7VnKkMZQQz0WRNUKTqfsSfzmlXW59bTBJtN41Q==');
-          fs.writeFileSync(process.env.RUNNER_TEMP + '/pinned.tgz', bytes, { flag: 'wx' });
+          import path from 'node:path';
+          import { spawnSync } from 'node:child_process';
+          const temporary = process.env.RUNNER_TEMP;
+          for (const [name, version, integrity] of [
+            ['pinned', '7.1.0-dev.20260928.1', 'aURCjT15k41CKK0+rBGHptWXt+pzwzsgUpiQ8GBWIwUGTt3Q7VnKkMZQQz0WRNUKTqfsSfzmlXW59bTBJtN41Q=='],
+            ['reference', '7.0.2', 'EYdf2cNg7rgCWJnxCdJ+F3V39O8ihb37eHAu1LK8oAFizgTQbPOK7zHHXbPt8rX24COqODXeI3sIf0fCXG7H/A=='],
+          ]) {
+            const response = await fetch('https://registry.npmjs.org/@typescript/typescript-linux-x64/-/typescript-linux-x64-' + version + '.tgz', { signal: AbortSignal.timeout(120000) });
+            assert.equal(response.ok, true);
+            const bytes = Buffer.from(await response.arrayBuffer());
+            assert.equal(createHash('sha512').update(bytes).digest('base64'), integrity);
+            fs.writeFileSync(temporary + '/' + name + '.tgz', bytes, { flag: 'wx' });
+            fs.mkdirSync(temporary + '/' + name);
+            assert.equal(spawnSync('tar', ['--no-same-owner', '-xzf', temporary + '/' + name + '.tgz', '-C', temporary + '/' + name]).status, 0);
+          }
+          const lib = temporary + '/pinned/package/lib';
+          const libraries = fs.readdirSync(lib).filter(file => file.startsWith('lib.') && file.endsWith('.d.ts')).sort();
+          assert.equal(libraries.length, 108);
+          const manifest = libraries.map(file => ({ name: file, sha256: createHash('sha256').update(fs.readFileSync(path.join(lib, file))).digest('hex') }));
+          fs.writeFileSync(temporary + '/evidence/libraries.json', JSON.stringify(manifest, null, 2));
+          for (const file of libraries) {
+            fs.copyFileSync(path.join(lib, file), temporary + '/reference/package/lib/' + file);
+            fs.copyFileSync(path.join(lib, file), temporary + '/candidate/' + file);
+          }
+          fs.mkdirSync('upstream/typescript-go/internal/bundled', { recursive: true });
+          fs.symlinkSync(lib, 'upstream/typescript-go/internal/bundled/libs');
           JS
-          mkdir "$RUNNER_TEMP/pinned"
-          tar --no-same-owner -xzf "$RUNNER_TEMP/pinned.tgz" -C "$RUNNER_TEMP/pinned"
-          mkdir -p upstream/typescript-go/internal/bundled
-          ln -s "$RUNNER_TEMP/pinned/package/lib" upstream/typescript-go/internal/bundled/libs
-          sha256sum "$RUNNER_TEMP/pinned/package/lib/tsc" > "$RUNNER_TEMP/evidence/binary.sha256"
-          sha256sum "$RUNNER_TEMP/pinned/package/lib/"*.d.ts > "$RUNNER_TEMP/evidence/libraries.sha256"
-          "$RUNNER_TEMP/pinned/package/lib/tsc" --version | tee "$RUNNER_TEMP/evidence/version.txt"
-          grep -Fx 'Version 7.1.0-dev.20260928.1' "$RUNNER_TEMP/evidence/version.txt"
-          git rev-parse HEAD > "$RUNNER_TEMP/evidence/fixture-head.txt"
-      - name: Validate upstream noEmit regression expectations
+      - name: Compare import type and namespace instantiations
         run: |
-          (cd packages/tsc-ts && TSC_TS_BIN="$RUNNER_TEMP/pinned/package/lib/tsc" node --test --test-reporter=tap tests/noemit.test.mjs) > "$RUNNER_TEMP/evidence/pinned.tap" 2>&1
-          cat "$RUNNER_TEMP/evidence/pinned.tap"
-          grep -Fx '# tests 4' "$RUNNER_TEMP/evidence/pinned.tap"
-          grep -Fx '# pass 4' "$RUNNER_TEMP/evidence/pinned.tap"
-          grep -Fx '# fail 0' "$RUNNER_TEMP/evidence/pinned.tap"
-          grep -Fx '# skipped 0' "$RUNNER_TEMP/evidence/pinned.tap"
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          import { createHash } from 'node:crypto';
+          import fs from 'node:fs';
+          import path from 'node:path';
+          import { spawnSync } from 'node:child_process';
+          const temporary = process.env.RUNNER_TEMP;
+          const api = [
+            'export declare function simple<T>(params: { onFlush: (items: T[]) => void }): void;',
+            'type Options<T> = { debounceMs: number; onFlush: (items: T[], createFlush: (params: { dispatch: () => Promise<void> }) => void) => void };',
+            'export declare function complex<T>(params: Omit<Options<T>, "debounceMs"> & { cfg: object; channel: string; debounceMsOverride?: number }): { debounceMs: number; debouncer: { enqueue: (value: T) => Promise<void> } };',
+          ].join('\n');
+          const cases = [
+            ['import-alias', 'type Factory = typeof import("./api.js").simple<Record<string, unknown>>;'],
+            ['namespace-alias', 'type Factory = typeof actual.simple<Record<string, unknown>>;'],
+            ['named-alias', 'import { simple } from "./api.js"; type Factory = typeof simple<Record<string, unknown>>;'],
+            ['import-alias-omit', 'type Factory = typeof import("./api.js").complex<Record<string, unknown>>;'],
+            ['namespace-alias-omit', 'type Factory = typeof actual.complex<Record<string, unknown>>;'],
+            ['negative-record-number', 'type Factory = typeof actual.simple<number>;'],
+          ];
+          const rows = [];
+          const binaries = {
+            candidate: temporary + '/candidate/tsc',
+            pinned: temporary + '/pinned/package/lib/tsc',
+            reference: temporary + '/reference/package/lib/tsc',
+          };
+          const binarySha256 = Object.fromEntries(Object.entries(binaries).map(([name, binary]) => [name, createHash('sha256').update(fs.readFileSync(binary)).digest('hex')]));
+          const fixtures = {};
+          for (const [name, alias] of cases) {
+            const fn = name.includes('omit') ? 'complex' : 'simple';
+            const source = [
+              'declare const actual: typeof import("./api.js");',
+              alias,
+              'const callbacks: Array<Parameters<Factory>[0]["onFlush"]> = [];',
+              'declare const params: Parameters<typeof actual.' + fn + '<Record<string, unknown>>>[0];',
+              'callbacks.push(params.onFlush);',
+            ].join('\n');
+            fixtures[name] = { 'api.ts': api, 'index.ts': source };
+            for (const [compiler, binary] of Object.entries(binaries)) {
+              for (const checkers of [1, 4]) {
+                const cwd = path.join(temporary, 'probe-' + name + '-' + compiler + '-' + checkers);
+                fs.mkdirSync(cwd);
+                fs.writeFileSync(path.join(cwd, 'api.ts'), api);
+                fs.writeFileSync(path.join(cwd, 'index.ts'), source);
+                fs.writeFileSync(path.join(cwd, 'tsconfig.json'), JSON.stringify({
+                  compilerOptions: { strict: true, noEmit: true, target: 'ES2022', module: 'NodeNext', types: [], lib: ['es2022'] },
+                  files: ['api.ts', 'index.ts'],
+                }));
+                const result = spawnSync(binary, ['-p', 'tsconfig.json', '--pretty', 'false', '--checkers', String(checkers)], {
+                  cwd, encoding: 'utf8', timeout: 30000, maxBuffer: 1024 * 1024, env: { PATH: process.env.PATH },
+                });
+                const row = { name, compiler, checkers, exit: result.status, signal: result.signal, stdout: result.stdout, stderr: result.stderr };
+                rows.push(row);
+                fs.writeFileSync(temporary + '/evidence/probe.json', JSON.stringify({ binarySha256, fixtures, rows }, null, 2));
+                assert.ifError(result.error);
+                assert.equal(result.signal, null);
+                assert([0, 1, 2].includes(result.status));
+                assert.equal(result.stderr, '');
+                assert.deepEqual(fs.readdirSync(cwd).sort(), ['api.ts', 'index.ts', 'tsconfig.json']);
+              }
+            }
+          }
+          assert.equal(rows.length, 36);
+          for (const row of rows.filter(row => row.compiler === 'pinned' && row.name !== 'negative-record-number')) {
+            assert.equal(row.exit, 0, JSON.stringify(row));
+            assert.equal(row.stdout, '');
+          }
+          for (const row of rows.filter(row => row.name === 'negative-record-number')) {
+            assert.notEqual(row.exit, 0);
+            assert.equal((row.stdout.match(/error TS\d+:/g) ?? []).length, 1);
+            assert.match(row.stdout, /^index\.ts\(5,16\): error TS2345:/);
+          }
+          console.log(JSON.stringify({ binarySha256, rows }, null, 2));
+          JS
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
-          name: pinned-noemit-regressions
+          name: import-instantiation-proof
           path: ${{ runner.temp }}/evidence
           if-no-files-found: error
           retention-days: 7
