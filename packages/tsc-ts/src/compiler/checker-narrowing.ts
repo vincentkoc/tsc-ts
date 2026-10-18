@@ -80,6 +80,7 @@ import {
   isLiteralType,
   isPatternLiteralType,
   isUnitType,
+  isUniformUnionType,
   mapType,
   removeType,
   someType,
@@ -89,6 +90,7 @@ import {
   createArrayType,
   isTupleType,
   newObjectType,
+  unionMatchesType,
 } from './checker-type-factory.js';
 import {
   areTypesComparable,
@@ -1556,6 +1558,12 @@ function narrowTypeByEqualityWorker(
         return valueType;
       if ((valueType.flags & TypeFlags.Object) !== 0) return c.nonPrimitiveType;
     }
+    // TypeScript-Go #4781: regular literals preserve a narrowed primitive union through
+    // mutable object properties. Mixed enums still need the comparable-type filter below.
+    if (!doubleEquals && (valueType.flags & TypeFlags.Primitive) !== 0 && isUniformUnionType(c, t)) {
+      const regularType = getRegularTypeOfLiteralType(c, valueType);
+      if (unionMatchesType(c, t as UnionType, regularType, false)) return regularType;
+    }
     const filtered = filterType(
       c,
       t,
@@ -1563,8 +1571,13 @@ function narrowTypeByEqualityWorker(
     );
     return replacePrimitivesWithLiterals(c, filtered, valueType);
   }
-  if (isUnitType(valueType))
+  if (isUnitType(valueType)) {
+    if (isUniformUnionType(c, t)) {
+      const filtered = removeType(c, t, getRegularTypeOfLiteralType(c, valueType));
+      if (filtered !== t) return filtered;
+    }
     return filterType(c, t, (u) => !(isUnitLikeType(u) && areTypesComparable(c, u, valueType)));
+  }
   return t;
 }
 
@@ -2184,14 +2197,19 @@ function narrowTypeBySwitchOnDiscriminantWorker(c: Checker, t: Type, flow: FlowS
     return getUnionType(c, ground);
   }
   const discriminantType = getUnionType(c, clauseTypes);
-  const caseType =
-    (discriminantType.flags & TypeFlags.Never) !== 0
-      ? c.neverType
-      : replacePrimitivesWithLiterals(
-          c,
-          filterType(c, t, (u) => areTypesComparable(c, discriminantType, u)),
-          discriminantType,
-        );
+  let caseType: Type | undefined;
+  if ((discriminantType.flags & TypeFlags.Never) !== 0) caseType = c.neverType;
+  else {
+    if ((discriminantType.flags & TypeFlags.Primitive) !== 0 && isUniformUnionType(c, t)) {
+      const regularType = getRegularTypeOfLiteralType(c, discriminantType);
+      if (unionMatchesType(c, t as UnionType, regularType, false)) caseType = regularType;
+    }
+    caseType ??= replacePrimitivesWithLiterals(
+      c,
+      filterType(c, t, (u) => areTypesComparable(c, discriminantType, u)),
+      discriminantType,
+    );
+  }
   if (!hasDefaultClause) return caseType;
   const defaultType = filterType(c, t, (u) => {
     const unit = extractUnitType(u);

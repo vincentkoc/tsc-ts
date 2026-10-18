@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixes
+
+- Preserve regular literal types when narrowing uniform primitive unions, matching TypeScript-Go #4781. This keeps optional string properties narrowed after copying them into mutable objects, without changing mixed-enum or loose-equality behavior.
+
 <!-- release:start -->
 
 ## 0.0.2
