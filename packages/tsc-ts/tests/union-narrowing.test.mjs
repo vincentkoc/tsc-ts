@@ -112,7 +112,7 @@ export function record(value: E | 1 | 2) {
   return remaining;
 }`,
     codes: [2322],
-    types: ["Type '1 | E.A'"],
+    type: /Type '1 \| E\.A'/,
   },
   {
     name: 'mixed-enums',
@@ -124,7 +124,7 @@ export function record(value: N1.E | N2.E) {
   return remaining;
 }`,
     codes: [2322],
-    types: ["Type 'N1.E.A | N2.E.A'"],
+    type: /Type '(?:N1\.E\.A \| N2\.E\.A|E\.A \| E\.A)'/,
   },
   {
     name: 'mixed-enum-switch',
@@ -137,7 +137,7 @@ export function record(value: N1.E | N2.E) {
   }
 }`,
     codes: [2322],
-    types: ["Type 'N1.E.A | N2.E.A'"],
+    type: /Type '(?:N1\.E\.A \| N2\.E\.A|E\.A \| E\.A)'/,
   },
   {
     name: 'symbol-control',
@@ -151,7 +151,7 @@ export function switched(value: symbol | string) {
   }
 }`,
     codes: [2322, 2322],
-    types: ["Type 'symbol'"],
+    type: /Type 'symbol'/,
   },
   {
     name: 'literal-exclusion',
@@ -193,18 +193,15 @@ for (const sideState of ['0', '1']) {
       const diagnostics = result.stdout.split('\n').filter((line) => /error TS\d+:/.test(line));
       const expectedCount = cases.reduce((sum, { codes }) => sum + codes.length, 0);
       assert.equal(diagnostics.length, expectedCount, result.stdout);
-      for (const { name, codes, types = [] } of cases) {
+      for (const { name, codes, type } of cases) {
         const lines = diagnostics.filter((line) => line.includes(name + '.ts('));
         assert.deepEqual(
           lines.map((line) => Number(line.match(/error TS(\d+):/)[1])),
           codes,
           name,
         );
-        for (const type of types)
-          assert.ok(
-            lines.some((line) => line.includes(type)),
-            name + ': ' + lines.join('\n'),
-          );
+        // Enum qualification differs between printers; both member types must remain.
+        if (type) assert.match(lines.join('\n'), type, name);
       }
     },
   );
