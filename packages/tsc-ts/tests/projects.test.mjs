@@ -133,6 +133,10 @@ const projects = [
         'declare const number: typeof import("./factory")<number>;\n' +
         'declare const generic: typeof import("./factory");\n' +
         'const s: string = text("s");\nconst n: number = number(1);\nconst b: boolean = generic(true);\ntext(1);\n',
+      'tsconfig.json': JSON.stringify({
+        compilerOptions: { ...base, module: 'CommonJS' },
+        files: ['a.ts'],
+      }),
     },
     [],
     [2345],
