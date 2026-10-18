@@ -27,11 +27,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh api repos/vincentkoc/tsc-ts/actions/runs/39093115080 > "$RUNNER_TEMP/producer.json"
+          gh api repos/vincentkoc/tsc-ts/actions/runs/39095377483 > "$RUNNER_TEMP/producer.json"
           node -e '
             const assert = require("node:assert/strict");
             const run = require(process.argv[1]);
-            assert.equal(run.head_sha, "73734dba98552bdb7d0d90735be3882e6bed7f63");
+            assert.equal(run.head_sha, "032d5d8680e9a75bdfaa624cd830222603654103");
             assert.equal(run.run_attempt, 1);
             assert.equal(run.conclusion, "success");
             assert.equal(run.repository.full_name, "vincentkoc/tsc-ts");
@@ -39,7 +39,7 @@ jobs:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           repository: vincentkoc/tsc-ts
-          run-id: 39093115080
+          run-id: 39095377483
           name: native
           github-token: ${{ github.token }}
           path: ${{ runner.temp }}/compiler-native
@@ -50,19 +50,19 @@ jobs:
           import hashlib, json, os, pathlib, tarfile
           temporary = pathlib.Path(os.environ['RUNNER_TEMP'])
           archive = temporary / 'compiler-native/native.tar'
-          assert hashlib.sha256(archive.read_bytes()).hexdigest() == '53ba97e75e6ed9bd1fcf0a65657cac90cd47faf0dd5a2640d849b874948764b3'
+          assert hashlib.sha256(archive.read_bytes()).hexdigest() == '9e84d8f792a56e9f4727bcc730a597f77429eb2a59f79af6edbc07ebf78a910c'
           with tarfile.open(archive) as tar:
               member = tar.getmember('packages/tsc-ts/dist/tsc')
               assert member.isfile() and member.size < 256 * 1024 * 1024
               binary = tar.extractfile(member).read()
           digest = hashlib.sha256(binary).hexdigest()
-          assert digest == 'af98f58985560e692b54777caca9ec4e001f590a24d032655be41927c57bc50e'
+          assert digest == '26f1a9ea2e9f3730e2f6127a23672a8b7dd33dc603a0494470a6108e3b2dd60b'
           destination = temporary / 'candidate/package/lib/tsc'
           destination.parent.mkdir(parents=True)
           destination.write_bytes(binary)
           destination.chmod(0o755)
-          identity = {'name': 'candidate', 'version': '7.0.2', 'source': '73734dba98552bdb7d0d90735be3882e6bed7f63',
-                      'repository': 'vincentkoc/tsc-ts', 'producerRun': 39093115080, 'binarySha256': digest,
+          identity = {'name': 'candidate', 'version': '7.0.2', 'source': '032d5d8680e9a75bdfaa624cd830222603654103',
+                      'repository': 'vincentkoc/tsc-ts', 'producerRun': 39095377483, 'binarySha256': digest,
                       'sideState': '0', 'archiveSha256': hashlib.sha256(archive.read_bytes()).hexdigest()}
           (temporary / 'candidate-build.json').write_text(json.dumps([identity], indent=2))
           PY
@@ -97,7 +97,10 @@ jobs:
           const source = fs.readFileSync(original, 'utf8');
           const assertion = 'return { kind, ...input } as Extract<SessionHistoryWorkerPreparedInput, { kind: K }>;';
           assert.equal(source.split(assertion).length, 2);
-          const probes = [{ name: 'original', target: original, source }];
+          const probes = [
+            { name: 'original', target: original, source },
+            { name: 'full-core', target: original, source, canonical: true },
+          ];
           // Keep the canonical core declaration roots when narrowing its source roots.
           const declarationRoots = [
             'src/types/node-runtime-globals.d.ts',
@@ -111,8 +114,10 @@ jobs:
             probe.line = probe.source.slice(0, probe.source.indexOf(assertion)).split('\n').length;
             probe.sourceSha256 = createHash('sha256').update(probe.source).digest('hex');
             delete probe.source;
-            probe.config = 'tsconfig.generic-' + probe.name + '.json';
-            fs.writeFileSync(probe.config, JSON.stringify({ extends: './tsconfig.core.json', files: [probe.target, ...declarationRoots.map(root => root.path)], include: [], exclude: [] }), { flag: 'wx' });
+            probe.config = probe.canonical ? 'tsconfig.core.json' : 'tsconfig.generic-' + probe.name + '.json';
+            if (!probe.canonical)
+              fs.writeFileSync(probe.config, JSON.stringify({ extends: './tsconfig.core.json', files: [probe.target, ...declarationRoots.map(root => root.path)], include: [], exclude: [] }), { flag: 'wx' });
+            delete probe.canonical;
           }
           const evidence = process.env.RUNNER_TEMP + '/generic-evidence/';
           const libs = process.env.RUNNER_TEMP + '/pinned/package/lib/';
@@ -200,20 +205,40 @@ jobs:
                       and reference['status'] in [1, 2] and reference['target2352'] == 1
                       and len(reference['diagnostics']) == len(reference['codes'])
                       and all(tuple(diagnostic) in allowed for diagnostic in reference['diagnostics']))
-          if not differential('original'):
-              original = inputs['probes'][0]
-              probe({**original, 'name': 'full-core', 'config': 'tsconfig.core.json'})
           def candidate_matches_pinned(name):
               pair = [row for row in results if row['probe'] == name and row['compiler'] in ['candidate', 'pinned']]
               return (len(pair) == 2 and {row['compiler'] for row in pair} == {'candidate', 'pinned'}
                       and all(row['status'] == 0 and not row['codes'] for row in pair))
           verdict = {'originalReproduces': differential('original'),
-                     'fullCoreReproduces': differential('full-core') if any(row['probe'] == 'full-core' for row in results) else None,
+                     'fullCoreReproduces': differential('full-core'),
                      'candidateMatchesPinned': {entry['name']: candidate_matches_pinned(entry['name']) for entry in inputs['probes']}}
           (evidence / 'verdict.json').write_text(json.dumps(verdict, indent=2))
           print(json.dumps(verdict), flush=True)
-          assert verdict['originalReproduces'] or verdict['fullCoreReproduces'], 'known version differential did not reproduce'
+          assert verdict['originalReproduces'] and verdict['fullCoreReproduces'], 'known version differential did not reproduce'
+          assert all(verdict['candidateMatchesPinned'].values()), 'patched compiler does not match clean pinned results'
           PY
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 032d5d8680e9a75bdfaa624cd830222603654103
+          path: compiler-proof
+          persist-credentials: false
+      - name: Verify native regression cases across checker counts
+        run: |
+          test "$(git -C compiler-proof rev-parse HEAD)" = 032d5d8680e9a75bdfaa624cd830222603654103
+          mkdir -p compiler-proof/upstream/typescript-go/internal/bundled
+          ln -s "$RUNNER_TEMP/pinned/package/lib" compiler-proof/upstream/typescript-go/internal/bundled/libs
+          for checkers in 1 4; do
+            wrapper="$RUNNER_TEMP/patched-native-$checkers"
+            printf '#!/bin/sh\nexec "%s/candidate/package/lib/tsc" "$@" --checkers %s\n' "$RUNNER_TEMP" "$checkers" > "$wrapper"
+            chmod 755 "$wrapper"
+            log="$RUNNER_TEMP/generic-evidence/patched-native-$checkers.tap"
+            (cd compiler-proof/packages/tsc-ts && TSC_TS_BIN="$wrapper" node --test --test-reporter=tap tests/recursion-relations.test.mjs tests/union-narrowing.test.mjs) > "$log" 2>&1 || { cat "$log"; exit 1; }
+            cat "$log"
+            grep -Fx '# tests 4' "$log"
+            grep -Fx '# pass 4' "$log"
+            grep -Fx '# fail 0' "$log"
+            grep -Fx '# skipped 0' "$log"
+          done
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
