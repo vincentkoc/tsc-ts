@@ -1,4 +1,4 @@
-name: Uniform union compatibility proof
+name: Deep relation contract proof
 
 on:
   push:
@@ -11,9 +11,9 @@ permissions:
 jobs:
   compare:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
-      - name: Verify producer identity
+      - name: Verify baseline producer
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -28,47 +28,43 @@ jobs:
           ' "$RUNNER_TEMP/producer.json"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: 73734dba98552bdb7d0d90735be3882e6bed7f63
-          persist-credentials: false
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          repository: vercel-labs/tsc-ts
-          ref: f43cb6bc130db3e451a28a0a49f3c7e2ed7a26f5
-          path: baseline
+          ref: 032d5d8680e9a75bdfaa624cd830222603654103
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 24
-      - run: npm ci
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
-        with:
-          repository: vincentkoc/tsc-ts
-          run-id: 39093115080
-          name: build
-          github-token: ${{ github.token }}
-          path: ${{ runner.temp }}/compiler-build
-          digest-mismatch: error
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           repository: vincentkoc/tsc-ts
           run-id: 39093115080
           name: native
           github-token: ${{ github.token }}
-          path: ${{ runner.temp }}/compiler-native
+          path: ${{ runner.temp }}/baseline
           digest-mismatch: error
-      - name: Stage verified builds and identical libraries
+      - name: Stage exact baseline and pinned libraries
         run: |
+          test "$(git rev-parse HEAD)" = 032d5d8680e9a75bdfaa624cd830222603654103
           mkdir "$RUNNER_TEMP/evidence"
           cp "$RUNNER_TEMP/producer.json" "$RUNNER_TEMP/evidence/"
-          test "$(git rev-parse HEAD)" = 73734dba98552bdb7d0d90735be3882e6bed7f63
-          test "$(git -C baseline rev-parse HEAD)" = f43cb6bc130db3e451a28a0a49f3c7e2ed7a26f5
-          tar -xf "$RUNNER_TEMP/compiler-build/build.tar" packages/tsc-ts/dist
-          tar -xf "$RUNNER_TEMP/compiler-native/native.tar" packages/tsc-ts/dist/tsc
+          python3 <<'PY'
+          import hashlib, os, pathlib, tarfile
+          temporary = pathlib.Path(os.environ['RUNNER_TEMP'])
+          archive = temporary / 'baseline/native.tar'
+          assert hashlib.sha256(archive.read_bytes()).hexdigest() == '53ba97e75e6ed9bd1fcf0a65657cac90cd47faf0dd5a2640d849b874948764b3'
+          with tarfile.open(archive) as tar:
+              member = tar.getmember('packages/tsc-ts/dist/tsc')
+              assert member.isfile() and member.size < 256 * 1024 * 1024
+              binary = tar.extractfile(member).read()
+          assert hashlib.sha256(binary).hexdigest() == 'af98f58985560e692b54777caca9ec4e001f590a24d032655be41927c57bc50e'
+          destination = temporary / 'baseline/tsc'
+          destination.write_bytes(binary)
+          destination.chmod(0o755)
+          PY
           node --input-type=module <<'JS'
           import assert from 'node:assert/strict';
           import { createHash } from 'node:crypto';
           import fs from 'node:fs';
-          const response = await fetch('https://registry.npmjs.org/@typescript/typescript-linux-x64/-/typescript-linux-x64-7.1.0-dev.20260928.1.tgz');
+          const response = await fetch('https://registry.npmjs.org/@typescript/typescript-linux-x64/-/typescript-linux-x64-7.1.0-dev.20260928.1.tgz', { signal: AbortSignal.timeout(120000) });
           assert.equal(response.ok, true);
           const bytes = Buffer.from(await response.arrayBuffer());
           assert.equal(createHash('sha512').update(bytes).digest('base64'), 'aURCjT15k41CKK0+rBGHptWXt+pzwzsgUpiQ8GBWIwUGTt3Q7VnKkMZQQz0WRNUKTqfsSfzmlXW59bTBJtN41Q==');
@@ -76,44 +72,28 @@ jobs:
           JS
           mkdir "$RUNNER_TEMP/pinned"
           tar --no-same-owner -xzf "$RUNNER_TEMP/pinned.tgz" -C "$RUNNER_TEMP/pinned"
-          mkdir -p upstream/typescript-go/internal/bundled baseline/upstream/typescript-go/internal/bundled
+          mkdir -p upstream/typescript-go/internal/bundled
           ln -s "$RUNNER_TEMP/pinned/package/lib" upstream/typescript-go/internal/bundled/libs
-          ln -s "$RUNNER_TEMP/pinned/package/lib" baseline/upstream/typescript-go/internal/bundled/libs
-          cmp package-lock.json baseline/package-lock.json
-          cmp package.json baseline/package.json
-          cmp packages/tsc-ts/package.json baseline/packages/tsc-ts/package.json
-          ln -s "$GITHUB_WORKSPACE/node_modules" baseline/node_modules
-          cp packages/tsc-ts/tests/union-narrowing.test.mjs baseline/packages/tsc-ts/tests/
-          npm run build -w tsc-ts --prefix baseline
-          sha256sum packages/tsc-ts/dist/tsc "$RUNNER_TEMP/pinned/package/lib/tsc" "$RUNNER_TEMP/compiler-build/build.tar" "$RUNNER_TEMP/compiler-native/native.tar" > "$RUNNER_TEMP/evidence/binaries.sha256"
+          sha256sum "$RUNNER_TEMP/baseline/tsc" "$RUNNER_TEMP/pinned/package/lib/tsc" > "$RUNNER_TEMP/evidence/binaries.sha256"
           sha256sum "$RUNNER_TEMP/pinned/package/lib/"*.d.ts > "$RUNNER_TEMP/evidence/libraries.sha256"
-          packages/tsc-ts/dist/tsc --version > "$RUNNER_TEMP/evidence/patched-version.txt"
-          "$RUNNER_TEMP/pinned/package/lib/tsc" --version > "$RUNNER_TEMP/evidence/pinned-version.txt"
-          grep -Fx 'Version 7.0.2' "$RUNNER_TEMP/evidence/patched-version.txt"
+          "$RUNNER_TEMP/baseline/tsc" --version | tee "$RUNNER_TEMP/evidence/baseline-version.txt"
+          "$RUNNER_TEMP/pinned/package/lib/tsc" --version | tee "$RUNNER_TEMP/evidence/pinned-version.txt"
+          grep -Fx 'Version 7.0.2' "$RUNNER_TEMP/evidence/baseline-version.txt"
           grep -Fx 'Version 7.1.0-dev.20260928.1' "$RUNNER_TEMP/evidence/pinned-version.txt"
-      - name: Compare baseline, patched Node/native and pinned 7.1
+      - name: Compare pre-backport native and pinned 7.1
         run: |
           for checkers in 1 4; do
-            for compiler in baseline patched-node patched-native pinned; do
+            for compiler in pinned baseline; do
               wrapper="$RUNNER_TEMP/run-$compiler-$checkers"
               case "$compiler" in
-                baseline)
-                  printf '#!/bin/sh\nexec node --stack-size=16000 "%s/baseline/packages/tsc-ts/dist/tsc-ts/src/main.js" "$@" --checkers %s\n' "$GITHUB_WORKSPACE" "$checkers" > "$wrapper"
-                  ;;
-                patched-node)
-                  printf '#!/bin/sh\nexec node --stack-size=16000 "%s/packages/tsc-ts/dist/tsc-ts/src/main.js" "$@" --checkers %s\n' "$GITHUB_WORKSPACE" "$checkers" > "$wrapper"
-                  ;;
-                patched-native)
-                  printf '#!/bin/sh\nexec "%s/packages/tsc-ts/dist/tsc" "$@" --checkers %s\n' "$GITHUB_WORKSPACE" "$checkers" > "$wrapper"
-                  ;;
-                pinned)
-                  printf '#!/bin/sh\nexec "%s/pinned/package/lib/tsc" "$@" --checkers %s\n' "$RUNNER_TEMP" "$checkers" > "$wrapper"
-                  ;;
+                baseline) binary="$RUNNER_TEMP/baseline/tsc" ;;
+                pinned) binary="$RUNNER_TEMP/pinned/package/lib/tsc" ;;
               esac
+              printf '#!/bin/sh\nexec "%s" "$@" --checkers %s\n' "$binary" "$checkers" > "$wrapper"
               chmod 755 "$wrapper"
               log="$RUNNER_TEMP/evidence/$compiler-$checkers.tap"
               set +e
-              (cd packages/tsc-ts && TSC_TS_BIN="$wrapper" node --test --test-reporter=tap tests/union-narrowing.test.mjs) > "$log" 2>&1
+              (cd packages/tsc-ts && TSC_TS_BIN="$wrapper" node --test --test-reporter=tap tests/recursion-relations.test.mjs) > "$log" 2>&1
               status=$?
               set -e
               cat "$log"
@@ -123,17 +103,27 @@ jobs:
           import collections, pathlib, re, sys
           text = pathlib.Path(sys.argv[1]).read_text()
           assert '# tests 2' in text and '# fail 2' in text and '# skipped 0' in text, text
-          expected = {
-            'optional-string': [2345], 'optional-string-spreads': [2345],
-            'optional-number': [2322], 'optional-bigint': [2322],
-            'required-string-control': [2345], 'loose-equality-control': [2345],
-            'enum-and-literal': [2322], 'mixed-enums': [2322], 'mixed-enum-switch': [2322],
-            'symbol-control': [2322, 2322],
+          blocks = re.split(r'(?m)^not ok \d+ - deep relations with side state ([01])\n', text)
+          assert len(blocks) == 5 and {blocks[1], blocks[3]} == {'0', '1'}, text
+          controls = {
+              'conditional-literal-control': 2322, 'shallow-recursive-mismatch': 2322,
+              'mid-cycle-recursive-mismatch': 2322, 'finite-mapped-indexed-mismatch': 2322,
+              'finite-mapped-intersection-mismatch': 2322, 'reverse-mapped-inference': 2322,
+              'small-generic-assertion-control': 2352,
           }
-          found = collections.Counter((name, int(code)) for name, code in re.findall(r'([a-z-]+)\.ts\(\d+,\d+\): error TS(\d+):', text))
-          wanted = collections.Counter((name, code) for name, codes in expected.items() for code in codes for _ in range(2))
-          assert found == wanted, (found, wanted)
-          print('baseline failed on the four expected literal-widening cases; controls intact')
+          for block in [blocks[2], blocks[4]]:
+              assert re.search(r"(?m)^  code: 'ERR_ASSERTION'$", block), block
+              assert re.search(r"(?m)^  operator: 'strictEqual'$", block), block
+              assert re.search(r'(?m)^  expected: 7$', block), block
+              actual = re.search(r'(?m)^  actual: (\d+)$', block)
+              assert actual and int(actual[1]) > 7, block
+              found = collections.Counter((name, int(code)) for name, code in re.findall(r'([a-z-]+)\.ts\(\d+,\d+\): error TS(\d+):', block))
+              assert sum(found.values()) == int(actual[1]), found
+              for name, code in controls.items(): assert found[(name, code)] == 1, (name, found)
+              extras = {key: count for key, count in found.items() if key not in {(name, code) for name, code in controls.items()}}
+              assert extras and all(code == 2321 and name in {'deep-recursive-relations', 'deep-conditional-types', 'conditional-literal-control'} for name, code in extras), extras
+              assert found[('deep-conditional-types', 2321)] > 0, found
+          print('baseline retains the expected deep-relation errors and all negative controls')
           PY
               else
                 test "$status" -eq 0
@@ -146,7 +136,7 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
-          name: uniform-union-proof
+          name: recursion-contract-proof
           path: ${{ runner.temp }}/evidence
           if-no-files-found: error
           retention-days: 7
