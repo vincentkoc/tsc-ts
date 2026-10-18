@@ -1,0 +1,167 @@
+name: Generic union reproduction
+
+on:
+  push:
+    branches: [chore/generic-union-probe-20261018]
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: openclaw/openclaw
+          ref: 445e34d75c3b7d54670542faa10f9b60cb1e0354
+          persist-credentials: false
+      - uses: ./.github/actions/setup-node-env
+        with:
+          node-version: 24.x
+          install-bun: 'false'
+          cache-mode: off
+      - name: Prepare exact source, compiler versions and focused roots
+        run: |
+          test "$(git rev-parse HEAD)" = 445e34d75c3b7d54670542faa10f9b60cb1e0354
+          test -z "$(git status --porcelain --untracked-files=no)"
+          node scripts/generate-kysely-types.mts
+          mkdir "$RUNNER_TEMP/generic-evidence"
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          import { createHash } from 'node:crypto';
+          import fs from 'node:fs';
+          import { execFileSync } from 'node:child_process';
+          const entries = [
+            ['reference', '7.0.2', 'EYdf2cNg7rgCWJnxCdJ+F3V39O8ihb37eHAu1LK8oAFizgTQbPOK7zHHXbPt8rX24COqODXeI3sIf0fCXG7H/A=='],
+            ['pinned', '7.1.0-dev.20260928.1', 'aURCjT15k41CKK0+rBGHptWXt+pzwzsgUpiQ8GBWIwUGTt3Q7VnKkMZQQz0WRNUKTqfsSfzmlXW59bTBJtN41Q=='],
+          ];
+          const identities = [];
+          for (const [name, version, integrity] of entries) {
+            const response = await fetch('https://registry.npmjs.org/@typescript/typescript-linux-x64/-/typescript-linux-x64-' + version + '.tgz', { signal: AbortSignal.timeout(120000) });
+            assert.equal(response.ok, true);
+            const bytes = Buffer.from(await response.arrayBuffer());
+            assert.equal(createHash('sha512').update(bytes).digest('base64'), integrity);
+            const destination = process.env.RUNNER_TEMP + '/' + name;
+            fs.mkdirSync(destination);
+            fs.writeFileSync(destination + '.tgz', bytes, { flag: 'wx' });
+            execFileSync('tar', ['--no-same-owner', '-xzf', destination + '.tgz', '-C', destination]);
+            identities.push({ name, version, integrity, binarySha256: createHash('sha256').update(fs.readFileSync(destination + '/package/lib/tsc')).digest('hex') });
+          }
+          const original = 'src/config/sessions/session-transcript-worker-readers.ts';
+          const source = fs.readFileSync(original, 'utf8');
+          const assertion = 'return { kind, ...input } as Extract<SessionHistoryWorkerPreparedInput, { kind: K }>;';
+          assert.equal(source.split(assertion).length, 2);
+          const runner = source.slice(source.indexOf('export type SessionHistoryWorkerRequestRunner'), source.indexOf('/** Decode domain results'));
+          const reader = source.slice(source.indexOf('  function reader<'), source.indexOf('\n  return {\n'));
+          assert.ok(runner && reader.includes(assertion));
+          const fixture = [
+            'import type { WorkerTaskResponse } from "./src/infra/worker-task-pool.types.js";',
+            'import type { SessionHistoryWorkerDatabase, SessionHistoryWorkerPreparedInput, SessionTranscriptWorkerValues } from "./src/config/sessions/session-transcript-worker.types.js";',
+            runner,
+            'export function createReaders(runRequest: SessionHistoryWorkerRequestRunner): Pick<Omit<SessionHistoryWorkerDatabase, "generation" | "assertCurrent">, "readMessagePresence" | "readPendingArchives"> {',
+            reader,
+            '  return { readMessagePresence: reader("transcript-message-presence", value => value.present), readPendingArchives: reader("session-pending-archives", value => value.pending) };',
+            '}',
+          ].join('\n');
+          fs.writeFileSync('generic-union-fixture.ts', fixture, { flag: 'wx' });
+          const probes = [
+            { name: 'original', target: original, source },
+            { name: 'fixture', target: 'generic-union-fixture.ts', source: fixture },
+          ];
+          for (const probe of probes) {
+            probe.line = probe.source.slice(0, probe.source.indexOf(assertion)).split('\n').length;
+            probe.sourceSha256 = createHash('sha256').update(probe.source).digest('hex');
+            delete probe.source;
+            probe.config = 'tsconfig.generic-' + probe.name + '.json';
+            fs.writeFileSync(probe.config, JSON.stringify({ extends: './tsconfig.core.json', files: [probe.target], include: [], exclude: [] }), { flag: 'wx' });
+          }
+          const evidence = process.env.RUNNER_TEMP + '/generic-evidence/';
+          const libs = process.env.RUNNER_TEMP + '/pinned/package/lib/';
+          const libraries = fs.readdirSync(libs).filter(name => name.endsWith('.d.ts')).sort().map(name => ({ name, sha256: createHash('sha256').update(fs.readFileSync(libs + name)).digest('hex') }));
+          fs.writeFileSync(evidence + 'inputs.json', JSON.stringify({ source: '445e34d75c3b7d54670542faa10f9b60cb1e0354', identities, libraries, probes }, null, 2));
+          fs.copyFileSync('generic-union-fixture.ts', evidence + 'fixture.ts');
+          for (const probe of probes) fs.copyFileSync(probe.config, evidence + probe.config);
+          JS
+          docker pull ubuntu@sha256:a2d43bffc46670d7108bb3c0468c67c5557c4c92e83e1e34cbff1322ad1b94dc
+      - name: Compare unchanged module and extracted reader
+        run: |
+          python3 <<'PY'
+          import hashlib, json, os, pathlib, re, subprocess
+          root = pathlib.Path.cwd()
+          temporary = pathlib.Path(os.environ['RUNNER_TEMP'])
+          evidence = temporary / 'generic-evidence'
+          inputs = json.loads((evidence / 'inputs.json').read_text())
+          image = 'ubuntu@sha256:a2d43bffc46670d7108bb3c0468c67c5557c4c92e83e1e34cbff1322ad1b94dc'
+          cpus = ','.join(str(cpu) for cpu in sorted(os.sched_getaffinity(0)))
+          memory = int(os.sysconf('SC_PHYS_PAGES') * os.sysconf('SC_PAGE_SIZE') * 0.8 / 1024**3) * 1024**3
+          assert memory > 0
+          results = []
+          sequence = 0
+          def isolated(compiler, arguments):
+              global sequence
+              sequence += 1
+              name = 'generic-probe-' + str(os.getpid()) + '-' + str(sequence)
+              args = ['docker', 'run', '--rm', '--pull', 'never', '--name', name, '--network', 'none', '--read-only',
+                      '--cpuset-cpus', cpus, '--memory', str(memory), '--memory-swap', str(memory), '--pids-limit', '256',
+                      '--user', str(os.getuid()) + ':' + str(os.getgid()), '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
+                      '--tmpfs', '/tmp:rw,nosuid,nodev', '--tmpfs', '/work/.git:rw,nosuid,nodev',
+                      '--workdir', '/work', '--env', 'HOME=/tmp', '--env', 'LC_ALL=C',
+                      '--mount', 'type=bind,src=' + str(root) + ',dst=/work,readonly',
+                      '--mount', 'type=bind,src=' + str(temporary / 'pinned/package/lib') + ',dst=/compiler,readonly',
+                      '--mount', 'type=bind,src=' + str(temporary / compiler / 'package/lib/tsc') + ',dst=/compiler/tsc,readonly',
+                      image, '/compiler/tsc', *arguments]
+              try:
+                  return subprocess.run(args, capture_output=True, text=True, timeout=120)
+              except subprocess.TimeoutExpired:
+                  cleanup = subprocess.run(['docker', 'rm', '--force', name], capture_output=True, text=True, timeout=30)
+                  assert cleanup.returncode == 0 or 'No such container' in cleanup.stderr, cleanup.stderr
+                  raise
+          for compiler, version in [('reference', '7.0.2'), ('pinned', '7.1.0-dev.20260928.1')]:
+              result = isolated(compiler, ['--version'])
+              assert result.returncode == 0 and result.stdout.strip() == 'Version ' + version and not result.stderr
+          common = ['--noEmit', '--declaration', 'false', '--pretty', 'false', '--incremental', 'false', '--checkers', '1']
+          def probe(entry):
+              for compiler in ['reference', 'pinned']:
+                  result = isolated(compiler, ['-p', entry['config'], *common])
+                  assert len(result.stdout) + len(result.stderr) < 8 * 1024 * 1024, 'diagnostic output exceeded evidence bound'
+                  label = entry['name'] + '-' + compiler
+                  (evidence / (label + '.stdout')).write_text(result.stdout)
+                  (evidence / (label + '.stderr')).write_text(result.stderr)
+                  row = {'probe': entry['name'], 'compiler': compiler, 'status': result.returncode,
+                         'target2352': len(re.findall(re.escape(entry['target']) + r'\(' + str(entry['line']) + r',\d+\): error TS2352:', result.stdout)),
+                         'codes': re.findall(r'error TS(\d+):', result.stdout),
+                         'diagnostics': [(path.removeprefix('/work/'), int(line), code) for path, line, column, code in re.findall(r'^(.+?)\((\d+),(\d+)\): error TS(\d+):', result.stdout, re.MULTILINE)],
+                         'stdoutSha256': hashlib.sha256(result.stdout.encode()).hexdigest()}
+                  results.append(row)
+                  (evidence / 'results.json').write_text(json.dumps({'arguments': common, 'cpus': cpus, 'memoryBytes': memory, 'results': results}, indent=2))
+                  print(json.dumps(row), flush=True)
+                  assert result.returncode in [0, 1, 2] and not result.stderr, 'compiler crashed, timed out, or wrote stderr'
+          for entry in inputs['probes']: probe(entry)
+          allowed = {(entry['target'], entry['line'], '2352') for entry in inputs['probes']}
+          allowed.add(('src/commands/backup-record.ts', 39, '2345'))
+          def differential(name):
+              pair = {row['compiler']: row for row in results if row['probe'] == name}
+              if set(pair) != {'reference', 'pinned'}: return False
+              reference, pinned = pair['reference'], pair['pinned']
+              return (pinned['status'] == 0 and not pinned['codes']
+                      and reference['status'] in [1, 2] and reference['target2352'] == 1
+                      and len(reference['diagnostics']) == len(reference['codes'])
+                      and all(tuple(diagnostic) in allowed for diagnostic in reference['diagnostics']))
+          if not differential('original'):
+              original = inputs['probes'][0]
+              probe({**original, 'name': 'full-core', 'config': 'tsconfig.core.json'})
+          verdict = {'originalReproduces': differential('original'), 'fixtureReproduces': differential('fixture'),
+                     'fullCoreReproduces': differential('full-core') if any(row['probe'] == 'full-core' for row in results) else None}
+          (evidence / 'verdict.json').write_text(json.dumps(verdict, indent=2))
+          print(json.dumps(verdict), flush=True)
+          assert verdict['originalReproduces'] or verdict['fullCoreReproduces'], 'known version differential did not reproduce'
+          PY
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: generic-union-reproduction
+          path: ${{ runner.temp }}/generic-evidence
+          if-no-files-found: error
+          retention-days: 7
