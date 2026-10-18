@@ -28,6 +28,7 @@ const nativeFiles = {
   'packages/tsc-ts/tests/projects.test.mjs': 'TSC_TS_BIN',
   'packages/tsc-ts/tests/scriptc.test.mjs': 'TSC_TS_BIN',
   'packages/tsc-ts/tests/tsc-project.test.mjs': 'TSC_TS_BIN',
+  'packages/tsc-ts/tests/union-narrowing.test.mjs': 'TSC_TS_BIN',
   'packages/tsc-ts/tests/program.test.mjs': 'TSC_TS_CLI',
   'packages/tsc-ts/tests/command-line.test.mjs': 'TSC_TS_CLI',
 };

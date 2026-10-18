@@ -1062,7 +1062,51 @@ export function filterType(c: Checker, type: Type, f: (t: Type) => boolean): Typ
 }
 
 export function removeType(c: Checker, type: Type, target: Type): Type {
-  return filterType(c, type, (t) => t !== target);
+  if ((type.flags & TypeFlags.Union) === 0) return type === target ? c.neverType : type;
+  const union = type as UnionType;
+  const origin = union.origin;
+  if (origin !== undefined && (origin.flags & TypeFlags.Union) !== 0 && containsType(c, typesOf(origin), target))
+    return filterType(c, type, (t) => t !== target);
+  const index = binarySearchTypes(c, union.types, target);
+  if (index < 0) return type;
+  if (union.types.length === 2) return union.types[1 - index]!;
+  const filtered = union.types.slice();
+  filtered.splice(index, 1);
+  return getUnionTypeFromSortedList(
+    c,
+    filtered,
+    union.objectFlags & (ObjectFlags.PrimitiveUnion | ObjectFlags.ContainsIntersections),
+    undefined,
+    undefined,
+  );
+}
+
+/** Primitive unions whose literal members cannot compare equal across distinct enum types. */
+export function isUniformUnionType(c: Checker, type: Type): boolean {
+  if ((type.objectFlags & ObjectFlags.PrimitiveUnion) === 0) return false;
+  const side = sideOf(c, type);
+  if ((side.objectFlags & ObjectFlags.IsUniformEnumComputed) === 0) {
+    side.objectFlags |= ObjectFlags.IsUniformEnumComputed;
+    if (computeIsUniformUnionType(c, typesOf(type))) side.objectFlags |= ObjectFlags.IsUniformEnum;
+  }
+  return (side.objectFlags & ObjectFlags.IsUniformEnum) !== 0;
+}
+
+function computeIsUniformUnionType(c: Checker, types: Type[]): boolean {
+  let enumSymbol: Symbol | undefined;
+  let hasStringOrNumberLiteral = false;
+  for (const type of types) {
+    if ((type.flags & TypeFlags.EnumLike) !== 0) {
+      if (hasStringOrNumberLiteral) return false;
+      const parent = getParentOfSymbol(c, type.symbol!);
+      if (enumSymbol === undefined) enumSymbol = parent;
+      else if (enumSymbol !== parent) return false;
+    } else if ((type.flags & TypeFlags.StringOrNumberLiteral) !== 0) {
+      if (enumSymbol !== undefined) return false;
+      hasStringOrNumberLiteral = true;
+    }
+  }
+  return true;
 }
 
 export function countTypes(type: Type): number {
@@ -1927,18 +1971,22 @@ function intersectUnionsOfPrimitiveTypes(c: Checker, types: Type[]): boolean {
 
 function eachUnionContains(c: Checker, unionTypes: Type[], t: Type): boolean {
   for (const type of unionTypes) {
-    const u = type as UnionType;
-    if (unionContainsType(c, u, t)) continue;
-    if (t === c.missingType) return unionContainsType(c, u, c.undefinedType);
-    if (t === c.undefinedType) return unionContainsType(c, u, c.missingType);
-    let primitive: Type | undefined;
-    if ((t.flags & TypeFlags.StringLiteral) !== 0) primitive = c.stringType;
-    else if ((t.flags & (TypeFlags.Enum | TypeFlags.NumberLiteral)) !== 0) primitive = c.numberType;
-    else if ((t.flags & TypeFlags.BigIntLiteral) !== 0) primitive = c.bigintType;
-    else if ((t.flags & TypeFlags.UniqueESSymbol) !== 0) primitive = c.esSymbolType;
-    if (primitive === undefined || !unionContainsType(c, u, primitive)) return false;
+    if (!unionMatchesType(c, type as UnionType, t, true)) return false;
   }
   return true;
+}
+
+/** Membership including primitive supertypes and the interchangeable missing/undefined types. */
+export function unionMatchesType(c: Checker, union: UnionType, t: Type, matchSymbol: boolean): boolean {
+  if (unionContainsType(c, union, t)) return true;
+  if (t === c.missingType) return unionContainsType(c, union, c.undefinedType);
+  if (t === c.undefinedType) return unionContainsType(c, union, c.missingType);
+  let primitive: Type | undefined;
+  if ((t.flags & TypeFlags.StringLiteral) !== 0) primitive = c.stringType;
+  else if ((t.flags & (TypeFlags.Enum | TypeFlags.NumberLiteral)) !== 0) primitive = c.numberType;
+  else if ((t.flags & TypeFlags.BigIntLiteral) !== 0) primitive = c.bigintType;
+  else if ((t.flags & TypeFlags.UniqueESSymbol) !== 0 && matchSymbol) primitive = c.esSymbolType;
+  return primitive !== undefined && unionContainsType(c, union, primitive);
 }
 
 export function getCrossProductUnionSize(types: readonly Type[]): number {
