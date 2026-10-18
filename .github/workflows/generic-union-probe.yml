@@ -28,8 +28,8 @@ jobs:
           cache: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          repository: microsoft/TypeScript
-          ref: ea58062260f0dcc4978ebb594d68ce418e1c27f5
+          repository: microsoft/typescript-go
+          ref: 12548e2a13b61004a2464686df7cbfe88640bbf9
           fetch-depth: 2
           path: compiler-source
           persist-credentials: false
@@ -42,12 +42,12 @@ jobs:
           def git(*args):
               return subprocess.check_output(['git', '-C', str(root), *args], text=True).strip()
           revisions = [
-              ('before', '74460fbb860205314907ca8a951aa0057ba74460', '3d36f9cc653b3d954f9ecb0983e1e977c39db08e'),
-              ('after', 'ea58062260f0dcc4978ebb594d68ce418e1c27f5', 'e2337d70cf4b1c0f328324a92bb1482aa21d2a33'),
+              ('before', 'ad56f89f97e0128c952676c1b669830f17f4dd41', 'c6bef58ab355fb84fa11d89a1b67b4cb400c512d'),
+              ('after', '12548e2a13b61004a2464686df7cbfe88640bbf9', '33fbf21e3bf700e0c47ceb49484be01a4b1ceebc'),
           ]
           before, after = (revision[1] for revision in revisions)
           assert git('rev-parse', after + '^') == before
-          assert git('diff', '--name-only', before, after, '--', 'tsc/internal', 'tsc/cmd', 'tsc/go.mod', 'tsc/go.sum') == 'tsc/internal/checker/relater.go'
+          assert git('diff', '--name-only', before, after, '--', 'internal', 'cmd', 'go.mod', 'go.sum') == 'internal/checker/relater.go'
           toolchain = subprocess.check_output(['go', 'version'], text=True).strip()
           assert toolchain == 'go version go1.26.9 linux/amd64', toolchain
           identities = []
@@ -58,14 +58,15 @@ jobs:
               destination = temporary / name / 'package/lib/tsc'
               destination.parent.mkdir(parents=True)
               arguments = ['go', 'build', '-mod=readonly', '-tags=noembed', '-o', str(destination), './cmd/tsgo']
-              subprocess.run(arguments, cwd=root / 'tsc', check=True, timeout=300,
+              subprocess.run(arguments, cwd=root, check=True, timeout=300,
                              env={**os.environ, 'GOWORK': 'off', 'GOTOOLCHAIN': 'local', 'CGO_ENABLED': '0'})
               assert not git('status', '--porcelain', '--untracked-files=no')
               identities.append({'name': name, 'version': '7.1.0-dev', 'source': revision, 'tree': tree,
-                                 'toolchain': toolchain, 'buildArguments': ['go', 'build', '-mod=readonly', '-tags=noembed', '-o', '<binary>', './cmd/tsgo'],
+                                 'repository': 'microsoft/typescript-go', 'toolchain': toolchain,
+                                 'buildArguments': ['go', 'build', '-mod=readonly', '-tags=noembed', '-o', '<binary>', './cmd/tsgo'],
                                  'buildEnvironment': {'GOWORK': 'off', 'GOTOOLCHAIN': 'local', 'CGO_ENABLED': '0'},
                                  'binarySha256': hashlib.sha256(destination.read_bytes()).hexdigest(),
-                                 'moduleHashes': {file: hashlib.sha256((root / 'tsc' / file).read_bytes()).hexdigest() for file in ['go.mod', 'go.sum']}})
+                                 'moduleHashes': {file: hashlib.sha256((root / file).read_bytes()).hexdigest() for file in ['go.mod', 'go.sum']}})
           (temporary / 'upstream-builds.json').write_text(json.dumps(identities, indent=2))
           PY
       - name: Prepare exact source, compiler versions and focused roots
