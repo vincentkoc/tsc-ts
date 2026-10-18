@@ -24,6 +24,7 @@ const nativeFiles = {
   'packages/tsc-ts/tests/api.test.mjs': 'TSC_TS_BIN',
   'packages/tsc-ts/tests/build.test.mjs': 'TSC_TS_BIN',
   'packages/tsc-ts/tests/library-checking.test.mjs': 'TSC_TS_BIN',
+  'packages/tsc-ts/tests/noemit.test.mjs': 'TSC_TS_BIN',
   'packages/tsc-ts/tests/parallel-emit.test.mjs': 'TSC_TS_BIN',
   'packages/tsc-ts/tests/projects.test.mjs': 'TSC_TS_BIN',
   'packages/tsc-ts/tests/recursion-relations.test.mjs': 'TSC_TS_BIN',

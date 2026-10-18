@@ -28,7 +28,7 @@ const bundledLibs = join(root, 'upstream/typescript-go/internal/bundled/libs');
 const skip = (!existsSync(tsgo) && 'needs packages/tsgo/dist/tsgo') || tscTsMissing;
 
 /**
- * @typedef {{ args: string[], edit?: Record<string, string | null>, touch?: string[], cwd?: string }} Step
+ * @typedef {{ args: string[], edit?: Record<string, string | null>, touch?: string[], cwd?: string, statuses?: [number, number] }} Step
  * @typedef {{ files: Record<string, string>, links?: Record<string, string>, steps: Step[] }} Scenario
  */
 
@@ -43,7 +43,7 @@ const scenarios = {
         'declare function isB(x: unknown): x is B;\ndeclare const x: A<number>;\nif (isB(x)) x.c;\n' +
         'declare const C: new () => A<number> & B;\nexport class D extends C {}\n',
     },
-    steps: [{ args: [] }],
+    steps: [{ statuses: [1, 2], args: [] }],
   },
   'numeric separators without a target': {
     files: {
@@ -64,7 +64,11 @@ const scenarios = {
         'declare function g(x: number): void;\ndeclare function g(x: { a: number }): void;\ng({ a: "s" });\n',
       'b.ts': 'export const b = 1;\n',
     },
-    steps: [{ args: [] }, { args: [], edit: { 'b.ts': 'export const b = 2;\n' } }, { args: [] }],
+    steps: [
+      { statuses: [1, 2], args: [] },
+      { statuses: [1, 2], args: [], edit: { 'b.ts': 'export const b = 2;\n' } },
+      { statuses: [1, 2], args: [] },
+    ],
   },
   'references with --verbose, --force, --dry and --clean': {
     files: {
@@ -187,7 +191,11 @@ const scenarios = {
       { args: ['--listEmittedFiles', '--sourceMap'] },
       { args: ['--listEmittedFiles'], edit: { 'src/g.ts': 'declare const g: string;\n' } },
       { args: ['--listEmittedFiles'], edit: { 'src/c.ts': null } },
-      { args: ['--listEmittedFiles', '--noEmit'], edit: { 'src/c.ts': 'export const c: number = "x";\n' } },
+      {
+        statuses: [1, 2],
+        args: ['--listEmittedFiles', '--noEmit'],
+        edit: { 'src/c.ts': 'export const c: number = "x";\n' },
+      },
       { args: ['--listEmittedFiles'] },
       { args: ['--listFiles', '--pretty'] },
     ],
@@ -296,8 +304,9 @@ const scenarios = {
         'import { unit } from "./base";\nexport const instance = new (class { private secret = unit })();\n',
     },
     steps: [
-      { args: ['--checkers', '2'] },
+      { statuses: [1, 2], args: ['--checkers', '2'] },
       {
+        statuses: [1, 2],
         args: ['--checkers', '2'],
         edit: {
           'src/base.ts':
@@ -306,10 +315,11 @@ const scenarios = {
         },
       },
       {
+        statuses: [1, 2],
         args: ['--checkers', '2'],
         edit: { 'src/e.ts': 'import { unit } from "./base";\nexport const e: number = unit.kind;\n' },
       },
-      { args: ['-b', '--checkers', '2'], edit: { 'tsconfig.tsbuildinfo': null } },
+      { statuses: [1, 2], args: ['-b', '--checkers', '2'], edit: { 'tsconfig.tsbuildinfo': null } },
     ],
   },
   // In native builds, -b rebuilds with build info check the files a change affects on two checker threads:
@@ -471,11 +481,15 @@ const scenarios = {
       'd.ts': 'import * as u from "untyped";\nexport const d = u;\n',
     },
     steps: [
-      { args: [] },
-      { args: [] },
-      { args: [], edit: { 'c.ts': 'export const c = 2;\n' } },
-      { args: [], edit: { 'node_modules/@types/untyped/package.json': '{"name":"@types/untyped","version":"1.0.0"}' } },
-      { args: [], edit: { 'c.ts': 'export const c = 3;\n' } },
+      { statuses: [1, 2], args: [] },
+      { statuses: [1, 2], args: [] },
+      { statuses: [1, 2], args: [], edit: { 'c.ts': 'export const c = 2;\n' } },
+      {
+        statuses: [1, 2],
+        args: [],
+        edit: { 'node_modules/@types/untyped/package.json': '{"name":"@types/untyped","version":"1.0.0"}' },
+      },
+      { statuses: [1, 2], args: [], edit: { 'c.ts': 'export const c = 3;\n' } },
     ],
   },
   'ambient modules augmented in module files': {
@@ -757,8 +771,12 @@ for (const [name, scenario] of Object.entries(scenarios)) {
       if (expected.output !== actual.output) {
         failures.push(`${label}: output\n--- tsgo\n${expected.output}\n--- ours\n${actual.output}`);
       }
-      if (expected.status !== actual.status)
+      // #4407 intentionally differs from the pinned 7.0.2 oracle on these noEmit steps.
+      if (step.statuses !== undefined) {
+        assert.deepEqual([expected.status, actual.status], step.statuses, label);
+      } else if (expected.status !== actual.status) {
         failures.push(`${label}: status tsgo ${expected.status}, ours ${actual.status}`);
+      }
       const files = new Set([...Object.keys(expected.files), ...Object.keys(actual.files)]);
       for (const file of [...files].sort()) {
         if (expected.files[file] === actual.files[file]) continue;

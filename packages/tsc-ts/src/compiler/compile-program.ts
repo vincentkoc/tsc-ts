@@ -336,11 +336,8 @@ export class PlainProgram extends CompilerProgram {
   }
 
   emit(writer: OutputWriter): EmitResult {
-    const options = this.options;
-    if (options.noEmit !== true) {
-      const skipped = handleNoEmitOnError(this);
-      if (skipped !== undefined) return skipped;
-    }
+    const skipped = handleNoEmitOptions(this);
+    if (skipped !== undefined) return skipped;
     const program = this.program;
     const files = program.getSourceFiles();
     const parallel = this.checked.emittedInParallel;
@@ -356,14 +353,18 @@ export class PlainProgram extends CompilerProgram {
                 : this.emitter.emit([file], EmitOnly.All, writer);
             }),
           );
-    // Emit is skipped only for files that would have been emitted.
-    if (options.noEmit === true) result.emitSkipped = files.some((file) => program.sourceFileMayBeEmitted(file, false));
     return result;
   }
 }
 
-/** Under `noEmitOnError`, a skipped emit with the errors that prevent it; otherwise `undefined`. */
-export function handleNoEmitOnError(program: CompilerProgram): EmitResult | undefined {
+/** The whole-program no-emit result; `undefined` means ordinary emit should proceed. */
+export function handleNoEmitOptions(
+  program: CompilerProgram,
+  emitBuildInfo?: () => EmitResult | undefined,
+): EmitResult | undefined {
+  // Whole-program noEmit completes the requested work without skipping emit (TypeScript-Go #4407).
+  // Keep a failed build-info result intact; targeted/forced emits have their own ProgramEmitter contract.
+  if (program.options.noEmit === true) return emitBuildInfo?.() ?? new EmitResult();
   if (program.options.noEmitOnError !== true) return undefined;
   const diagnostics = getDiagnosticsOfProgram(program, true);
   if (diagnostics.length === 0) return undefined;

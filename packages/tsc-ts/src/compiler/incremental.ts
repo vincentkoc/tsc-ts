@@ -48,7 +48,7 @@ import {
   CompileTimes,
   combineEmitResults,
   declarationDiagnosticsOfFile,
-  handleNoEmitOnError,
+  handleNoEmitOptions,
   OutputWriter,
   type CheckedProgram,
   writeHeldOutputs,
@@ -2243,12 +2243,9 @@ export class IncrementalProgram extends CompilerProgram {
 
   emit(writer: OutputWriter): EmitResult {
     const options = this.snapshot.options;
-    let result: EmitResult | undefined;
-    if (options.noEmit === true) {
-      result = new EmitResult();
-      result.emitSkipped = true;
-    } else result = handleNoEmitOnError(this);
+    const result = handleNoEmitOptions(this, () => this.emitBuildInfo(writer));
     if (result !== undefined) {
+      if (options.noEmit === true) return result;
       const buildInfoResult = this.emitBuildInfo(writer);
       if (buildInfoResult !== undefined) {
         for (const d of buildInfoResult.diagnostics) result.diagnostics.push(d);

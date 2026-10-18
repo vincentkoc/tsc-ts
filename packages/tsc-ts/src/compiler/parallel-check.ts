@@ -1501,7 +1501,7 @@ export function checkFromQueue(
         `checkers: file ${index} ${(performance.now() - fileStart).toFixed(1)}ms ${files[i]!.text.length} ${files[i]!.fileName}\n`,
       );
     if (holding !== undefined && blocksEmit(counter)) {
-      // The program won't emit (`handleNoEmitOnError`).
+      // The program won't emit (`handleNoEmitOptions`).
       const skipped = new EmitResult();
       skipped.emitSkipped = true;
       emits.push(skipped);
