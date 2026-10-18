@@ -26,6 +26,7 @@ const nativeFiles = {
   'packages/tsc-ts/tests/library-checking.test.mjs': 'TSC_TS_BIN',
   'packages/tsc-ts/tests/parallel-emit.test.mjs': 'TSC_TS_BIN',
   'packages/tsc-ts/tests/projects.test.mjs': 'TSC_TS_BIN',
+  'packages/tsc-ts/tests/recursion-relations.test.mjs': 'TSC_TS_BIN',
   'packages/tsc-ts/tests/scriptc.test.mjs': 'TSC_TS_BIN',
   'packages/tsc-ts/tests/tsc-project.test.mjs': 'TSC_TS_BIN',
   'packages/tsc-ts/tests/union-narrowing.test.mjs': 'TSC_TS_BIN',

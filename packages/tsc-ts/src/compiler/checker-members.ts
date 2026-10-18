@@ -2207,7 +2207,7 @@ export function getResolvedBaseConstraint(c: Checker, t: Type, stack?: Recursion
   if (!pushTypeResolution(c, t, TypeSystemPropertyName.ResolvedBaseConstraint)) return c.circularConstraintType;
   let constraint: Type | undefined;
   // At least 10 levels; up to 50 without deeply nested types on the stack.
-  const identity = getRecursionIdentity(t);
+  const identity = getRecursionIdentity(c, t);
   const current = stack ?? [];
   if (current.length < 10 || (current.length < 50 && !current.includes(identity)))
     constraint = computeBaseConstraint(c, getSimplifiedType(c, t, false), current.concat([identity]));
