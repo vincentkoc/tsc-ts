@@ -1,4 +1,4 @@
-name: Deep relation contract proof
+name: NoEmit exit contract proof
 
 on:
   push:
@@ -17,11 +17,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh api repos/vincentkoc/tsc-ts/actions/runs/39093115080 > "$RUNNER_TEMP/producer.json"
+          gh api repos/vincentkoc/tsc-ts/actions/runs/39095377483 > "$RUNNER_TEMP/producer.json"
           node -e '
             const assert = require("node:assert/strict");
             const run = require(process.argv[1]);
-            assert.equal(run.head_sha, "73734dba98552bdb7d0d90735be3882e6bed7f63");
+            assert.equal(run.head_sha, "032d5d8680e9a75bdfaa624cd830222603654103");
             assert.equal(run.run_attempt, 1);
             assert.equal(run.conclusion, "success");
             assert.equal(run.repository.full_name, "vincentkoc/tsc-ts");
@@ -36,7 +36,7 @@ jobs:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           repository: vincentkoc/tsc-ts
-          run-id: 39093115080
+          run-id: 39095377483
           name: native
           github-token: ${{ github.token }}
           path: ${{ runner.temp }}/baseline
@@ -50,12 +50,12 @@ jobs:
           import hashlib, os, pathlib, tarfile
           temporary = pathlib.Path(os.environ['RUNNER_TEMP'])
           archive = temporary / 'baseline/native.tar'
-          assert hashlib.sha256(archive.read_bytes()).hexdigest() == '53ba97e75e6ed9bd1fcf0a65657cac90cd47faf0dd5a2640d849b874948764b3'
+          assert hashlib.sha256(archive.read_bytes()).hexdigest() == '9e84d8f792a56e9f4727bcc730a597f77429eb2a59f79af6edbc07ebf78a910c'
           with tarfile.open(archive) as tar:
               member = tar.getmember('packages/tsc-ts/dist/tsc')
               assert member.isfile() and member.size < 256 * 1024 * 1024
               binary = tar.extractfile(member).read()
-          assert hashlib.sha256(binary).hexdigest() == 'af98f58985560e692b54777caca9ec4e001f590a24d032655be41927c57bc50e'
+          assert hashlib.sha256(binary).hexdigest() == '26f1a9ea2e9f3730e2f6127a23672a8b7dd33dc603a0494470a6108e3b2dd60b'
           destination = temporary / 'baseline/tsc'
           destination.write_bytes(binary)
           destination.chmod(0o755)
@@ -80,63 +80,67 @@ jobs:
           "$RUNNER_TEMP/pinned/package/lib/tsc" --version | tee "$RUNNER_TEMP/evidence/pinned-version.txt"
           grep -Fx 'Version 7.0.2' "$RUNNER_TEMP/evidence/baseline-version.txt"
           grep -Fx 'Version 7.1.0-dev.20260928.1' "$RUNNER_TEMP/evidence/pinned-version.txt"
-      - name: Compare pre-backport native and pinned 7.1
+      - name: Compare noEmit exit contract
         run: |
-          for checkers in 1 4; do
-            for compiler in pinned baseline; do
-              wrapper="$RUNNER_TEMP/run-$compiler-$checkers"
-              case "$compiler" in
-                baseline) binary="$RUNNER_TEMP/baseline/tsc" ;;
-                pinned) binary="$RUNNER_TEMP/pinned/package/lib/tsc" ;;
-              esac
-              printf '#!/bin/sh\nexec "%s" "$@" --checkers %s\n' "$binary" "$checkers" > "$wrapper"
-              chmod 755 "$wrapper"
-              log="$RUNNER_TEMP/evidence/$compiler-$checkers.tap"
-              set +e
-              (cd packages/tsc-ts && TSC_TS_BIN="$wrapper" node --test --test-reporter=tap tests/recursion-relations.test.mjs) > "$log" 2>&1
-              status=$?
-              set -e
-              cat "$log"
-              if [ "$compiler" = baseline ]; then
-                test "$status" -eq 1
-                python3 - "$log" <<'PY'
-          import collections, pathlib, re, sys
-          text = pathlib.Path(sys.argv[1]).read_text()
-          assert '# tests 2' in text and '# fail 2' in text and '# skipped 0' in text, text
-          blocks = re.split(r'(?m)^not ok \d+ - deep relations with side state ([01])\n', text)
-          assert len(blocks) == 5 and {blocks[1], blocks[3]} == {'0', '1'}, text
-          controls = {
-              'conditional-literal-control': 2322, 'shallow-recursive-mismatch': 2322,
-              'mid-cycle-recursive-mismatch': 2322, 'finite-mapped-indexed-mismatch': 2322,
-              'finite-mapped-intersection-mismatch': 2322, 'reverse-mapped-inference': 2322,
-              'small-generic-assertion-control': 2352,
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          import { createHash } from 'node:crypto';
+          import fs from 'node:fs';
+          import path from 'node:path';
+          import { spawnSync } from 'node:child_process';
+          const temporary = process.env.RUNNER_TEMP;
+          const url = 'https://registry.npmjs.org/@typescript/typescript-linux-x64/-/typescript-linux-x64-7.0.2.tgz';
+          const response = await fetch(url, { signal: AbortSignal.timeout(120000) });
+          assert.equal(response.ok, true);
+          const bytes = Buffer.from(await response.arrayBuffer());
+          assert.equal(createHash('sha512').update(bytes).digest('base64'), 'EYdf2cNg7rgCWJnxCdJ+F3V39O8ihb37eHAu1LK8oAFizgTQbPOK7zHHXbPt8rX24COqODXeI3sIf0fCXG7H/A==');
+          fs.writeFileSync(temporary + '/reference.tgz', bytes, { flag: 'wx' });
+          fs.mkdirSync(temporary + '/reference');
+          assert.equal(spawnSync('tar', ['--no-same-owner', '-xzf', temporary + '/reference.tgz', '-C', temporary + '/reference']).status, 0);
+          const lib = temporary + '/pinned/package/lib';
+          for (const file of fs.readdirSync(lib).filter(file => file.endsWith('.d.ts'))) {
+            fs.copyFileSync(path.join(lib, file), temporary + '/reference/package/lib/' + file);
+            fs.copyFileSync(path.join(lib, file), temporary + '/baseline/' + file);
           }
-          for block in [blocks[2], blocks[4]]:
-              assert re.search(r"(?m)^  code: 'ERR_ASSERTION'$", block), block
-              assert re.search(r"(?m)^  operator: 'strictEqual'$", block), block
-              assert re.search(r'(?m)^  expected: 7$', block), block
-              actual = re.search(r'(?m)^  actual: (\d+)$', block)
-              assert actual and int(actual[1]) > 7, block
-              found = collections.Counter((name, int(code)) for name, code in re.findall(r'([a-z-]+)\.ts\(\d+,\d+\): error TS(\d+):', block))
-              assert sum(found.values()) == int(actual[1]), found
-              for name, code in controls.items(): assert found[(name, code)] == 1, (name, found)
-              extras = {key: count for key, count in found.items() if key not in {(name, code) for name, code in controls.items()}}
-              assert extras and all(code == 2321 and name in {'deep-recursive-relations', 'deep-conditional-types', 'conditional-literal-control'} for name, code in extras), extras
-              assert found[('deep-conditional-types', 2321)] > 0, found
-          print('baseline retains the expected deep-relation errors and all negative controls')
-          PY
-              else
-                test "$status" -eq 0
-                grep -Fx '# tests 2' "$log"
-                grep -Fx '# pass 2' "$log"
-                grep -Fx '# skipped 0' "$log"
-              fi
-            done
-          done
+          const results = [];
+          for (const [name, binary, expected] of [
+            ['candidate', temporary + '/baseline/tsc', 1],
+            ['reference', temporary + '/reference/package/lib/tsc', 1],
+            ['pinned', lib + '/tsc', 2],
+          ]) {
+            for (const checkers of [1, 4]) {
+              for (const incremental of [false, true]) {
+                const cwd = temporary + '/case-' + name + '-' + checkers + '-' + incremental;
+                fs.mkdirSync(cwd);
+                fs.writeFileSync(cwd + '/index.ts', 'const value: string = 123;\n');
+                fs.writeFileSync(cwd + '/tsconfig.json', JSON.stringify({
+                  compilerOptions: { strict: true, noEmit: true, target: 'ES2022', types: [], incremental,
+                    ...(incremental ? { tsBuildInfoFile: './cache.tsbuildinfo' } : {}) },
+                  files: ['index.ts'],
+                }));
+                for (let repeat = 0; repeat < (incremental ? 2 : 1); repeat++) {
+                  const args = ['-p', 'tsconfig.json', '--pretty', 'false', '--checkers', String(checkers)];
+                  const r = spawnSync(binary, args, { cwd, encoding: 'utf8', timeout: 30000, env: { PATH: process.env.PATH } });
+                  const row = { name, checkers, incremental, repeat, exit: r.status, signal: r.signal, stdout: r.stdout, stderr: r.stderr,
+                    emitted: fs.readdirSync(cwd).filter(f => !['index.ts', 'tsconfig.json'].includes(f)) };
+                  results.push(row);
+                  fs.writeFileSync(temporary + '/evidence/noemit.json', JSON.stringify(results, null, 2));
+                  assert.ifError(r.error);
+                  assert.equal(r.status, expected, JSON.stringify(row));
+                  assert.equal(r.stderr, '');
+                  assert.equal(r.stdout, "index.ts(1,7): error TS2322: Type 'number' is not assignable to type 'string'.\n");
+                  assert.deepEqual(row.emitted, incremental ? ['cache.tsbuildinfo'] : []);
+                }
+              }
+            }
+          }
+          assert.equal(results.length, 18);
+          console.log(JSON.stringify(results, null, 2));
+          JS
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
-          name: recursion-contract-proof
+          name: noemit-contract-proof
           path: ${{ runner.temp }}/evidence
           if-no-files-found: error
           retention-days: 7
