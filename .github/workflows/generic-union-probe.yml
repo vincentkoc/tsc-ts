@@ -70,17 +70,26 @@ jobs:
             { name: 'original', target: original, source },
             { name: 'fixture', target: 'generic-union-fixture.ts', source: fixture },
           ];
+          // Keep the canonical core declaration roots when narrowing its source roots.
+          const declarationRoots = [
+            'src/types/node-runtime-globals.d.ts',
+            'src/types/agent-sessions.d.ts',
+            'src/types/qrcode.d.ts',
+            'src/infra/host-env-security-policy.d.ts',
+            'packages/gateway-protocol/src/compiled/sender-identity.d.ts',
+          ].map(path => ({ path, sha256: createHash('sha256').update(fs.readFileSync(path)).digest('hex') }));
+          assert.equal(JSON.parse(fs.readFileSync('node_modules/@types/node/package.json', 'utf8')).version, '26.6.4');
           for (const probe of probes) {
             probe.line = probe.source.slice(0, probe.source.indexOf(assertion)).split('\n').length;
             probe.sourceSha256 = createHash('sha256').update(probe.source).digest('hex');
             delete probe.source;
             probe.config = 'tsconfig.generic-' + probe.name + '.json';
-            fs.writeFileSync(probe.config, JSON.stringify({ extends: './tsconfig.core.json', files: [probe.target], include: [], exclude: [] }), { flag: 'wx' });
+            fs.writeFileSync(probe.config, JSON.stringify({ extends: './tsconfig.core.json', files: [probe.target, ...declarationRoots.map(root => root.path)], include: [], exclude: [] }), { flag: 'wx' });
           }
           const evidence = process.env.RUNNER_TEMP + '/generic-evidence/';
           const libs = process.env.RUNNER_TEMP + '/pinned/package/lib/';
           const libraries = fs.readdirSync(libs).filter(name => name.endsWith('.d.ts')).sort().map(name => ({ name, sha256: createHash('sha256').update(fs.readFileSync(libs + name)).digest('hex') }));
-          fs.writeFileSync(evidence + 'inputs.json', JSON.stringify({ source: '445e34d75c3b7d54670542faa10f9b60cb1e0354', identities, libraries, probes }, null, 2));
+          fs.writeFileSync(evidence + 'inputs.json', JSON.stringify({ source: '445e34d75c3b7d54670542faa10f9b60cb1e0354', identities, libraries, declarationRoots, probes }, null, 2));
           fs.copyFileSync('generic-union-fixture.ts', evidence + 'fixture.ts');
           for (const probe of probes) fs.copyFileSync(probe.config, evidence + probe.config);
           JS
@@ -122,6 +131,14 @@ jobs:
               result = isolated(compiler, ['--version'])
               assert result.returncode == 0 and result.stdout.strip() == 'Version ' + version and not result.stderr
           common = ['--noEmit', '--declaration', 'false', '--pretty', 'false', '--incremental', 'false', '--checkers', '1']
+          for entry in inputs['probes']:
+              listed = isolated('pinned', ['-p', entry['config'], *common, '--listFilesOnly'])
+              assert listed.returncode == 0 and not listed.stderr, 'file-list verification failed'
+              paths = set(listed.stdout.splitlines())
+              assert all('/work/' + item['path'] in paths for item in inputs['declarationRoots']), 'canonical declaration root missing'
+              assert any('/@types/node/index.d.ts' in path for path in paths), 'Node declarations missing'
+              assert not any(path.endswith('/lib.dom.d.ts') or path.endswith('.test-compat.d.ts') for path in paths), 'non-core declarations admitted'
+              (evidence / (entry['name'] + '.files')).write_text(listed.stdout)
           def probe(entry):
               for compiler in ['reference', 'pinned']:
                   result = isolated(compiler, ['-p', entry['config'], *common])
