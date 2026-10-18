@@ -17,23 +17,23 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh api repos/vincentkoc/tsc-ts/actions/runs/39161683342 > "$RUNNER_TEMP/producer.json"
-          gh api repos/vincentkoc/tsc-ts/actions/artifacts/12149605114 > "$RUNNER_TEMP/artifact.json"
+          gh api repos/vincentkoc/tsc-ts/actions/runs/39162206911 > "$RUNNER_TEMP/producer.json"
+          gh api repos/vincentkoc/tsc-ts/actions/artifacts/12149466946 > "$RUNNER_TEMP/artifact.json"
           node -e '
             const assert = require("node:assert/strict");
             const run = require(process.argv[1]);
             const artifact = require(process.argv[2]);
-            assert.equal(run.head_sha, "a36d7cd3a7b6bc77be0e40c01d231788c505f963");
+            assert.equal(run.head_sha, "a80cd9190942d16286a8483f1f51d9a68037324f");
             assert.equal(run.run_attempt, 1);
             assert.equal(run.conclusion, "success");
             assert.equal(run.repository.full_name, "vincentkoc/tsc-ts");
             assert.equal(artifact.workflow_run.id, run.id);
             assert.equal(artifact.expired, false);
-            assert.equal(artifact.digest, "sha256:bc29bd3557dc50da22d4bc413a36b3fba6395af143cc12c0ebd5e30684c74e81");
+            assert.equal(artifact.digest, "sha256:e980b95b04e69c901b59c6ff6f90f8da3d4619dd386cb5067d64233ed28de423");
           ' "$RUNNER_TEMP/producer.json" "$RUNNER_TEMP/artifact.json"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: a36d7cd3a7b6bc77be0e40c01d231788c505f963
+          ref: a80cd9190942d16286a8483f1f51d9a68037324f
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
@@ -41,8 +41,8 @@ jobs:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           repository: vincentkoc/tsc-ts
-          run-id: 39161683342
-          artifact-ids: 12149605114
+          run-id: 39162206911
+          artifact-ids: 12149466946
           merge-multiple: true
           github-token: ${{ github.token }}
           path: ${{ runner.temp }}/candidate
@@ -55,7 +55,7 @@ jobs:
           import hashlib, os, pathlib, tarfile
           temporary = pathlib.Path(os.environ['RUNNER_TEMP'])
           archive = temporary / 'candidate/native.tar'
-          assert hashlib.sha256(archive.read_bytes()).hexdigest() == 'f50cd82b94c1f8e8f29f7d46883b88c3c4f019c5e9d34468523c4f85985792d9'
+          assert hashlib.sha256(archive.read_bytes()).hexdigest() == '4aebeece3702944225ddd8b957889279510aeeb6246fe9b29a02158268c7c79b'
           with tarfile.open(archive) as tar:
               member = tar.getmember('packages/tsc-ts/dist/tsc')
               assert member.isfile() and member.size < 256 * 1024 * 1024
