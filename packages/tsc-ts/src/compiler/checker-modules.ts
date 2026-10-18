@@ -151,6 +151,7 @@ import {
   resolveStructuredTypeMembers,
 } from './checker-members.js';
 import { getTypeFromTypeNode, getTypeReferenceType } from './checker-type-nodes.js';
+import { getInstantiationExpressionType } from './checker-calls.js';
 import { checkExpression, checkExpressionCached, getResolvedSymbol } from './checker-expressions.js';
 import { isTypeAssignableTo, checkTypeAssignableTo } from './relations.js';
 import { getSpreadType } from './checker-object-literals.js';
@@ -2114,7 +2115,7 @@ function resolveImportSymbolType(c: Checker, node: Node, symbol: Symbol, meaning
   const resolvedSymbol = resolveSymbol(c, symbol)!;
   c.resolvedSymbols.set(node.id, resolvedSymbol);
   // The alias itself caches the type of a value.
-  if (meaning === SymbolFlags.Value) return getTypeOfSymbol(c, symbol);
+  if (meaning === SymbolFlags.Value) return getInstantiationExpressionType(c, getTypeOfSymbol(c, symbol), node);
   return getTypeReferenceType(c, node, resolvedSymbol);
 }
 
