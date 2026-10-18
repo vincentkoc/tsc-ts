@@ -17,23 +17,23 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh api repos/vincentkoc/tsc-ts/actions/runs/39144449305 > "$RUNNER_TEMP/producer.json"
-          gh api repos/vincentkoc/tsc-ts/actions/artifacts/12142748611 > "$RUNNER_TEMP/artifact.json"
+          gh api repos/vincentkoc/tsc-ts/actions/runs/39161683342 > "$RUNNER_TEMP/producer.json"
+          gh api repos/vincentkoc/tsc-ts/actions/artifacts/12149605114 > "$RUNNER_TEMP/artifact.json"
           node -e '
             const assert = require("node:assert/strict");
             const run = require(process.argv[1]);
             const artifact = require(process.argv[2]);
-            assert.equal(run.head_sha, "68d06984df0d1a9a89657cf44f0f709e15f13403");
+            assert.equal(run.head_sha, "a36d7cd3a7b6bc77be0e40c01d231788c505f963");
             assert.equal(run.run_attempt, 1);
             assert.equal(run.conclusion, "success");
             assert.equal(run.repository.full_name, "vincentkoc/tsc-ts");
             assert.equal(artifact.workflow_run.id, run.id);
             assert.equal(artifact.expired, false);
-            assert.equal(artifact.digest, "sha256:6a11c020208c367c598f632f6cc2c8555b5df88de0f8d01e2a1160e691124d00");
+            assert.equal(artifact.digest, "sha256:bc29bd3557dc50da22d4bc413a36b3fba6395af143cc12c0ebd5e30684c74e81");
           ' "$RUNNER_TEMP/producer.json" "$RUNNER_TEMP/artifact.json"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: 68d06984df0d1a9a89657cf44f0f709e15f13403
+          ref: a36d7cd3a7b6bc77be0e40c01d231788c505f963
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
@@ -41,8 +41,8 @@ jobs:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           repository: vincentkoc/tsc-ts
-          run-id: 39144449305
-          artifact-ids: 12142748611
+          run-id: 39161683342
+          artifact-ids: 12149605114
           merge-multiple: true
           github-token: ${{ github.token }}
           path: ${{ runner.temp }}/candidate
@@ -55,12 +55,12 @@ jobs:
           import hashlib, os, pathlib, tarfile
           temporary = pathlib.Path(os.environ['RUNNER_TEMP'])
           archive = temporary / 'candidate/native.tar'
-          assert hashlib.sha256(archive.read_bytes()).hexdigest() == 'b0fa72407c1dcda84d6976bb0452470317d0c5a69d74e8f7d6a3e0184819ee6a'
+          assert hashlib.sha256(archive.read_bytes()).hexdigest() == 'f50cd82b94c1f8e8f29f7d46883b88c3c4f019c5e9d34468523c4f85985792d9'
           with tarfile.open(archive) as tar:
               member = tar.getmember('packages/tsc-ts/dist/tsc')
               assert member.isfile() and member.size < 256 * 1024 * 1024
               binary = tar.extractfile(member).read()
-          assert hashlib.sha256(binary).hexdigest() == 'd44c8fc87651ea844ae30418a08697c54b5c55213463c5f5eff19b1f7b3d3479'
+          assert hashlib.sha256(binary).hexdigest() == '9785e87da1650d3a4007d234bc194c63b640524c010497884e4b93161c7bb149'
           destination = temporary / 'candidate/tsc'
           destination.write_bytes(binary)
           destination.chmod(0o755)
@@ -161,15 +161,18 @@ jobs:
             }
           }
           assert.equal(rows.length, 36);
-          for (const row of rows.filter(row => row.compiler === 'pinned' && row.name !== 'negative-record-number')) {
+          for (const row of rows.filter(row => row.name !== 'negative-record-number')) {
             assert.equal(row.exit, 0, JSON.stringify(row));
             assert.equal(row.stdout, '');
           }
           for (const row of rows.filter(row => row.name === 'negative-record-number')) {
-            assert.notEqual(row.exit, 0);
+            assert.equal(row.exit, row.compiler === 'reference' ? 1 : 2);
             assert.equal((row.stdout.match(/error TS\d+:/g) ?? []).length, 1);
             assert.match(row.stdout, /^index\.ts\(5,16\): error TS2345:/);
           }
+          const negative = rows.filter(row => row.name === 'negative-record-number');
+          assert.equal(new Set(negative.map(row => row.stdout)).size, 1);
+          assert.equal(new Set(rows.map(row => [row.name, row.compiler, row.checkers].join(':'))).size, 36);
           console.log(JSON.stringify({ binarySha256, rows }, null, 2));
           JS
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
