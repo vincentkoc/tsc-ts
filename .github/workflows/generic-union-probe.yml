@@ -22,6 +22,52 @@ jobs:
           node-version: 24.x
           install-bun: 'false'
           cache-mode: off
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version: 1.26.9
+          cache: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: microsoft/TypeScript
+          ref: ea58062260f0dcc4978ebb594d68ce418e1c27f5
+          fetch-depth: 2
+          path: compiler-source
+          persist-credentials: false
+      - name: Build exact upstream revisions around recursion identity fix
+        run: |
+          python3 <<'PY'
+          import hashlib, json, os, pathlib, subprocess
+          root = pathlib.Path('compiler-source').resolve()
+          temporary = pathlib.Path(os.environ['RUNNER_TEMP'])
+          def git(*args):
+              return subprocess.check_output(['git', '-C', str(root), *args], text=True).strip()
+          revisions = [
+              ('before', '74460fbb860205314907ca8a951aa0057ba74460', '3d36f9cc653b3d954f9ecb0983e1e977c39db08e'),
+              ('after', 'ea58062260f0dcc4978ebb594d68ce418e1c27f5', 'e2337d70cf4b1c0f328324a92bb1482aa21d2a33'),
+          ]
+          before, after = (revision[1] for revision in revisions)
+          assert git('rev-parse', after + '^') == before
+          assert git('diff', '--name-only', before, after, '--', 'tsc/internal', 'tsc/cmd', 'tsc/go.mod', 'tsc/go.sum') == 'tsc/internal/checker/relater.go'
+          toolchain = subprocess.check_output(['go', 'version'], text=True).strip()
+          assert toolchain == 'go version go1.26.9 linux/amd64', toolchain
+          identities = []
+          for name, revision, tree in revisions:
+              assert not git('status', '--porcelain', '--untracked-files=no')
+              subprocess.run(['git', '-C', str(root), 'checkout', '--detach', revision], check=True)
+              assert git('rev-parse', 'HEAD') == revision and git('rev-parse', 'HEAD^{tree}') == tree
+              destination = temporary / name / 'package/lib/tsc'
+              destination.parent.mkdir(parents=True)
+              arguments = ['go', 'build', '-mod=readonly', '-tags=noembed', '-o', str(destination), './cmd/tsgo']
+              subprocess.run(arguments, cwd=root / 'tsc', check=True, timeout=300,
+                             env={**os.environ, 'GOWORK': 'off', 'GOTOOLCHAIN': 'local', 'CGO_ENABLED': '0'})
+              assert not git('status', '--porcelain', '--untracked-files=no')
+              identities.append({'name': name, 'version': '7.1.0-dev', 'source': revision, 'tree': tree,
+                                 'toolchain': toolchain, 'buildArguments': ['go', 'build', '-mod=readonly', '-tags=noembed', '-o', '<binary>', './cmd/tsgo'],
+                                 'buildEnvironment': {'GOWORK': 'off', 'GOTOOLCHAIN': 'local', 'CGO_ENABLED': '0'},
+                                 'binarySha256': hashlib.sha256(destination.read_bytes()).hexdigest(),
+                                 'moduleHashes': {file: hashlib.sha256((root / 'tsc' / file).read_bytes()).hexdigest() for file in ['go.mod', 'go.sum']}})
+          (temporary / 'upstream-builds.json').write_text(json.dumps(identities, indent=2))
+          PY
       - name: Prepare exact source, compiler versions and focused roots
         run: |
           test "$(git rev-parse HEAD)" = 445e34d75c3b7d54670542faa10f9b60cb1e0354
@@ -37,7 +83,7 @@ jobs:
             ['reference', '7.0.2', 'EYdf2cNg7rgCWJnxCdJ+F3V39O8ihb37eHAu1LK8oAFizgTQbPOK7zHHXbPt8rX24COqODXeI3sIf0fCXG7H/A=='],
             ['pinned', '7.1.0-dev.20260928.1', 'aURCjT15k41CKK0+rBGHptWXt+pzwzsgUpiQ8GBWIwUGTt3Q7VnKkMZQQz0WRNUKTqfsSfzmlXW59bTBJtN41Q=='],
           ];
-          const identities = [];
+          const identities = JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP + '/upstream-builds.json', 'utf8'));
           for (const [name, version, integrity] of entries) {
             const response = await fetch('https://registry.npmjs.org/@typescript/typescript-linux-x64/-/typescript-linux-x64-' + version + '.tgz', { signal: AbortSignal.timeout(120000) });
             assert.equal(response.ok, true);
@@ -127,20 +173,25 @@ jobs:
                   cleanup = subprocess.run(['docker', 'rm', '--force', name], capture_output=True, text=True, timeout=30)
                   assert cleanup.returncode == 0 or 'No such container' in cleanup.stderr, cleanup.stderr
                   raise
-          for compiler, version in [('reference', '7.0.2'), ('pinned', '7.1.0-dev.20260928.1')]:
+          for identity in inputs['identities']:
+              compiler, version = identity['name'], identity['version']
               result = isolated(compiler, ['--version'])
               assert result.returncode == 0 and result.stdout.strip() == 'Version ' + version and not result.stderr
           common = ['--noEmit', '--declaration', 'false', '--pretty', 'false', '--incremental', 'false', '--checkers', '1']
           for entry in inputs['probes']:
-              listed = isolated('pinned', ['-p', entry['config'], *common, '--listFilesOnly'])
-              assert listed.returncode == 0 and not listed.stderr, 'file-list verification failed'
-              paths = set(listed.stdout.splitlines())
-              assert all('/work/' + item['path'] in paths for item in inputs['declarationRoots']), 'canonical declaration root missing'
-              assert any('/@types/node/index.d.ts' in path for path in paths), 'Node declarations missing'
-              assert not any(path.endswith('/lib.dom.d.ts') or path.endswith('.test-compat.d.ts') for path in paths), 'non-core declarations admitted'
-              (evidence / (entry['name'] + '.files')).write_text(listed.stdout)
+              files = {}
+              for compiler in ['reference', 'pinned', 'before', 'after']:
+                  listed = isolated(compiler, ['-p', entry['config'], *common, '--listFilesOnly'])
+                  assert listed.returncode == 0 and not listed.stderr, 'file-list verification failed'
+                  paths = set(listed.stdout.splitlines())
+                  assert all('/work/' + item['path'] in paths for item in inputs['declarationRoots']), 'canonical declaration root missing'
+                  assert any('/@types/node/index.d.ts' in path for path in paths), 'Node declarations missing'
+                  assert not any(path.endswith('/lib.dom.d.ts') or path.endswith('.test-compat.d.ts') for path in paths), 'non-core declarations admitted'
+                  files[compiler] = paths
+                  (evidence / (entry['name'] + '-' + compiler + '.files')).write_text(listed.stdout)
+              assert files['before'] == files['after'], 'adjacent compiler revisions admitted different files'
           def probe(entry):
-              for compiler in ['reference', 'pinned']:
+              for compiler in ['reference', 'pinned', 'before', 'after']:
                   result = isolated(compiler, ['-p', entry['config'], *common])
                   assert len(result.stdout) + len(result.stderr) < 8 * 1024 * 1024, 'diagnostic output exceeded evidence bound'
                   label = entry['name'] + '-' + compiler
@@ -158,10 +209,10 @@ jobs:
           for entry in inputs['probes']: probe(entry)
           allowed = {(entry['target'], entry['line'], '2352') for entry in inputs['probes']}
           allowed.add(('src/commands/backup-record.ts', 39, '2345'))
-          def differential(name):
+          def differential(name, old='reference', new='pinned'):
               pair = {row['compiler']: row for row in results if row['probe'] == name}
-              if set(pair) != {'reference', 'pinned'}: return False
-              reference, pinned = pair['reference'], pair['pinned']
+              if old not in pair or new not in pair: return False
+              reference, pinned = pair[old], pair[new]
               return (pinned['status'] == 0 and not pinned['codes']
                       and reference['status'] in [1, 2] and reference['target2352'] == 1
                       and len(reference['diagnostics']) == len(reference['codes'])
@@ -170,7 +221,8 @@ jobs:
               original = inputs['probes'][0]
               probe({**original, 'name': 'full-core', 'config': 'tsconfig.core.json'})
           verdict = {'originalReproduces': differential('original'), 'fixtureReproduces': differential('fixture'),
-                     'fullCoreReproduces': differential('full-core') if any(row['probe'] == 'full-core' for row in results) else None}
+                     'fullCoreReproduces': differential('full-core') if any(row['probe'] == 'full-core' for row in results) else None,
+                     'recursionFixReproduces': {entry['name']: differential(entry['name'], 'before', 'after') for entry in inputs['probes']}}
           (evidence / 'verdict.json').write_text(json.dumps(verdict, indent=2))
           print(json.dumps(verdict), flush=True)
           assert verdict['originalReproduces'] or verdict['fullCoreReproduces'], 'known version differential did not reproduce'
