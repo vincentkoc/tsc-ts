@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   compare:
@@ -22,52 +23,48 @@ jobs:
           node-version: 24.x
           install-bun: 'false'
           cache-mode: off
-      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+      - name: Verify candidate producer
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api repos/vincentkoc/tsc-ts/actions/runs/39093115080 > "$RUNNER_TEMP/producer.json"
+          node -e '
+            const assert = require("node:assert/strict");
+            const run = require(process.argv[1]);
+            assert.equal(run.head_sha, "73734dba98552bdb7d0d90735be3882e6bed7f63");
+            assert.equal(run.run_attempt, 1);
+            assert.equal(run.conclusion, "success");
+            assert.equal(run.repository.full_name, "vincentkoc/tsc-ts");
+          ' "$RUNNER_TEMP/producer.json"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
-          go-version: 1.26.9
-          cache: false
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          repository: microsoft/typescript-go
-          ref: 12548e2a13b61004a2464686df7cbfe88640bbf9
-          fetch-depth: 2
-          path: compiler-source
-          persist-credentials: false
-      - name: Build exact upstream revisions around recursion identity fix
+          repository: vincentkoc/tsc-ts
+          run-id: 39093115080
+          name: native
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/compiler-native
+          digest-mismatch: error
+      - name: Stage exact candidate binary
         run: |
           python3 <<'PY'
-          import hashlib, json, os, pathlib, subprocess
-          root = pathlib.Path('compiler-source').resolve()
+          import hashlib, json, os, pathlib, tarfile
           temporary = pathlib.Path(os.environ['RUNNER_TEMP'])
-          def git(*args):
-              return subprocess.check_output(['git', '-C', str(root), *args], text=True).strip()
-          revisions = [
-              ('before', 'ad56f89f97e0128c952676c1b669830f17f4dd41', 'c6bef58ab355fb84fa11d89a1b67b4cb400c512d'),
-              ('after', '12548e2a13b61004a2464686df7cbfe88640bbf9', '33fbf21e3bf700e0c47ceb49484be01a4b1ceebc'),
-          ]
-          before, after = (revision[1] for revision in revisions)
-          assert git('rev-parse', after + '^') == before
-          assert git('diff', '--name-only', before, after, '--', 'internal', 'cmd', 'go.mod', 'go.sum') == 'internal/checker/relater.go'
-          toolchain = subprocess.check_output(['go', 'version'], text=True).strip()
-          assert toolchain == 'go version go1.26.9 linux/amd64', toolchain
-          identities = []
-          for name, revision, tree in revisions:
-              assert not git('status', '--porcelain', '--untracked-files=no')
-              subprocess.run(['git', '-C', str(root), 'checkout', '--detach', revision], check=True)
-              assert git('rev-parse', 'HEAD') == revision and git('rev-parse', 'HEAD^{tree}') == tree
-              destination = temporary / name / 'package/lib/tsc'
-              destination.parent.mkdir(parents=True)
-              arguments = ['go', 'build', '-mod=readonly', '-tags=noembed', '-o', str(destination), './cmd/tsgo']
-              subprocess.run(arguments, cwd=root, check=True, timeout=300,
-                             env={**os.environ, 'GOWORK': 'off', 'GOTOOLCHAIN': 'local', 'CGO_ENABLED': '0'})
-              assert not git('status', '--porcelain', '--untracked-files=no')
-              identities.append({'name': name, 'version': '7.1.0-dev', 'source': revision, 'tree': tree,
-                                 'repository': 'microsoft/typescript-go', 'toolchain': toolchain,
-                                 'buildArguments': ['go', 'build', '-mod=readonly', '-tags=noembed', '-o', '<binary>', './cmd/tsgo'],
-                                 'buildEnvironment': {'GOWORK': 'off', 'GOTOOLCHAIN': 'local', 'CGO_ENABLED': '0'},
-                                 'binarySha256': hashlib.sha256(destination.read_bytes()).hexdigest(),
-                                 'moduleHashes': {file: hashlib.sha256((root / file).read_bytes()).hexdigest() for file in ['go.mod', 'go.sum']}})
-          (temporary / 'upstream-builds.json').write_text(json.dumps(identities, indent=2))
+          archive = temporary / 'compiler-native/native.tar'
+          assert hashlib.sha256(archive.read_bytes()).hexdigest() == '53ba97e75e6ed9bd1fcf0a65657cac90cd47faf0dd5a2640d849b874948764b3'
+          with tarfile.open(archive) as tar:
+              member = tar.getmember('packages/tsc-ts/dist/tsc')
+              assert member.isfile() and member.size < 256 * 1024 * 1024
+              binary = tar.extractfile(member).read()
+          digest = hashlib.sha256(binary).hexdigest()
+          assert digest == 'af98f58985560e692b54777caca9ec4e001f590a24d032655be41927c57bc50e'
+          destination = temporary / 'candidate/package/lib/tsc'
+          destination.parent.mkdir(parents=True)
+          destination.write_bytes(binary)
+          destination.chmod(0o755)
+          identity = {'name': 'candidate', 'version': '7.0.2', 'source': '73734dba98552bdb7d0d90735be3882e6bed7f63',
+                      'repository': 'vincentkoc/tsc-ts', 'producerRun': 39093115080, 'binarySha256': digest,
+                      'sideState': '0', 'archiveSha256': hashlib.sha256(archive.read_bytes()).hexdigest()}
+          (temporary / 'candidate-build.json').write_text(json.dumps([identity], indent=2))
           PY
       - name: Prepare exact source, compiler versions and focused roots
         run: |
@@ -84,7 +81,7 @@ jobs:
             ['reference', '7.0.2', 'EYdf2cNg7rgCWJnxCdJ+F3V39O8ihb37eHAu1LK8oAFizgTQbPOK7zHHXbPt8rX24COqODXeI3sIf0fCXG7H/A=='],
             ['pinned', '7.1.0-dev.20260928.1', 'aURCjT15k41CKK0+rBGHptWXt+pzwzsgUpiQ8GBWIwUGTt3Q7VnKkMZQQz0WRNUKTqfsSfzmlXW59bTBJtN41Q=='],
           ];
-          const identities = JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP + '/upstream-builds.json', 'utf8'));
+          const identities = JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP + '/candidate-build.json', 'utf8'));
           for (const [name, version, integrity] of entries) {
             const response = await fetch('https://registry.npmjs.org/@typescript/typescript-linux-x64/-/typescript-linux-x64-' + version + '.tgz', { signal: AbortSignal.timeout(120000) });
             assert.equal(response.ok, true);
@@ -100,23 +97,7 @@ jobs:
           const source = fs.readFileSync(original, 'utf8');
           const assertion = 'return { kind, ...input } as Extract<SessionHistoryWorkerPreparedInput, { kind: K }>;';
           assert.equal(source.split(assertion).length, 2);
-          const runner = source.slice(source.indexOf('export type SessionHistoryWorkerRequestRunner'), source.indexOf('/** Decode domain results'));
-          const reader = source.slice(source.indexOf('  function reader<'), source.indexOf('\n  return {\n'));
-          assert.ok(runner && reader.includes(assertion));
-          const fixture = [
-            'import type { WorkerTaskResponse } from "./src/infra/worker-task-pool.types.js";',
-            'import type { SessionHistoryWorkerDatabase, SessionHistoryWorkerPreparedInput, SessionTranscriptWorkerValues } from "./src/config/sessions/session-transcript-worker.types.js";',
-            runner,
-            'export function createReaders(runRequest: SessionHistoryWorkerRequestRunner): Pick<Omit<SessionHistoryWorkerDatabase, "generation" | "assertCurrent">, "readMessagePresence" | "readPendingArchives"> {',
-            reader,
-            '  return { readMessagePresence: reader("transcript-message-presence", value => value.present), readPendingArchives: reader("session-pending-archives", value => value.pending) };',
-            '}',
-          ].join('\n');
-          fs.writeFileSync('generic-union-fixture.ts', fixture, { flag: 'wx' });
-          const probes = [
-            { name: 'original', target: original, source },
-            { name: 'fixture', target: 'generic-union-fixture.ts', source: fixture },
-          ];
+          const probes = [{ name: 'original', target: original, source }];
           // Keep the canonical core declaration roots when narrowing its source roots.
           const declarationRoots = [
             'src/types/node-runtime-globals.d.ts',
@@ -137,11 +118,11 @@ jobs:
           const libs = process.env.RUNNER_TEMP + '/pinned/package/lib/';
           const libraries = fs.readdirSync(libs).filter(name => name.endsWith('.d.ts')).sort().map(name => ({ name, sha256: createHash('sha256').update(fs.readFileSync(libs + name)).digest('hex') }));
           fs.writeFileSync(evidence + 'inputs.json', JSON.stringify({ source: '445e34d75c3b7d54670542faa10f9b60cb1e0354', identities, libraries, declarationRoots, probes }, null, 2));
-          fs.copyFileSync('generic-union-fixture.ts', evidence + 'fixture.ts');
+          fs.copyFileSync(process.env.RUNNER_TEMP + '/producer.json', evidence + 'producer.json');
           for (const probe of probes) fs.copyFileSync(probe.config, evidence + probe.config);
           JS
           docker pull ubuntu@sha256:a2d43bffc46670d7108bb3c0468c67c5557c4c92e83e1e34cbff1322ad1b94dc
-      - name: Compare unchanged module and extracted reader
+      - name: Compare candidate against the unchanged OpenClaw module
         run: |
           python3 <<'PY'
           import hashlib, json, os, pathlib, re, subprocess
@@ -164,6 +145,7 @@ jobs:
                       '--user', str(os.getuid()) + ':' + str(os.getgid()), '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
                       '--tmpfs', '/tmp:rw,nosuid,nodev', '--tmpfs', '/work/.git:rw,nosuid,nodev',
                       '--workdir', '/work', '--env', 'HOME=/tmp', '--env', 'LC_ALL=C',
+                      '--env', 'TSC_TS_LIB_DIR=/compiler', '--env', 'TSC_TS_SIDE_STATE=0',
                       '--mount', 'type=bind,src=' + str(root) + ',dst=/work,readonly',
                       '--mount', 'type=bind,src=' + str(temporary / 'pinned/package/lib') + ',dst=/compiler,readonly',
                       '--mount', 'type=bind,src=' + str(temporary / compiler / 'package/lib/tsc') + ',dst=/compiler/tsc,readonly',
@@ -181,7 +163,7 @@ jobs:
           common = ['--noEmit', '--declaration', 'false', '--pretty', 'false', '--incremental', 'false', '--checkers', '1']
           for entry in inputs['probes']:
               files = {}
-              for compiler in ['reference', 'pinned', 'before', 'after']:
+              for compiler in ['reference', 'pinned', 'candidate']:
                   listed = isolated(compiler, ['-p', entry['config'], *common, '--listFilesOnly'])
                   assert listed.returncode == 0 and not listed.stderr, 'file-list verification failed'
                   paths = set(listed.stdout.splitlines())
@@ -190,9 +172,9 @@ jobs:
                   assert not any(path.endswith('/lib.dom.d.ts') or path.endswith('.test-compat.d.ts') for path in paths), 'non-core declarations admitted'
                   files[compiler] = paths
                   (evidence / (entry['name'] + '-' + compiler + '.files')).write_text(listed.stdout)
-              assert files['before'] == files['after'], 'adjacent compiler revisions admitted different files'
+              assert files['candidate'] == files['pinned'], 'candidate and pinned compiler admitted different files'
           def probe(entry):
-              for compiler in ['reference', 'pinned', 'before', 'after']:
+              for compiler in ['reference', 'pinned', 'candidate']:
                   result = isolated(compiler, ['-p', entry['config'], *common])
                   assert len(result.stdout) + len(result.stderr) < 8 * 1024 * 1024, 'diagnostic output exceeded evidence bound'
                   label = entry['name'] + '-' + compiler
@@ -221,9 +203,13 @@ jobs:
           if not differential('original'):
               original = inputs['probes'][0]
               probe({**original, 'name': 'full-core', 'config': 'tsconfig.core.json'})
-          verdict = {'originalReproduces': differential('original'), 'fixtureReproduces': differential('fixture'),
+          def candidate_matches_pinned(name):
+              pair = [row for row in results if row['probe'] == name and row['compiler'] in ['candidate', 'pinned']]
+              return (len(pair) == 2 and {row['compiler'] for row in pair} == {'candidate', 'pinned'}
+                      and all(row['status'] == 0 and not row['codes'] for row in pair))
+          verdict = {'originalReproduces': differential('original'),
                      'fullCoreReproduces': differential('full-core') if any(row['probe'] == 'full-core' for row in results) else None,
-                     'recursionFixReproduces': {entry['name']: differential(entry['name'], 'before', 'after') for entry in inputs['probes']}}
+                     'candidateMatchesPinned': {entry['name']: candidate_matches_pinned(entry['name']) for entry in inputs['probes']}}
           (evidence / 'verdict.json').write_text(json.dumps(verdict, indent=2))
           print(json.dumps(verdict), flush=True)
           assert verdict['originalReproduces'] or verdict['fullCoreReproduces'], 'known version differential did not reproduce'
