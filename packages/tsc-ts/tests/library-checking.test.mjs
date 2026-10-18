@@ -12,6 +12,7 @@ import { execFile } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { stripVTControlCharacters } from 'node:util';
 import { tempDir } from './temp.mjs';
 import { tscTs, tscTsMissing } from './toolchain.mjs';
 
@@ -294,7 +295,7 @@ async function compareProjects(t, projectList, variantList) {
         if (expected.stderr !== actual.stderr)
           problems.push('stderr ' + firstDifference(expected.stderr, actual.stderr));
         // Every run here has a valid whole-program noEmit config. #4407 changed its error exit.
-        const output = expected.stdout.replace(/\u001b\[[0-9;]*m/g, '');
+        const output = stripVTControlCharacters(expected.stdout);
         const diagnostics = /\berror TS\d+:/.test(output);
         assert.ok(diagnostics || output.trim() === '', label);
         assert.equal(expected.stderr, '', label);

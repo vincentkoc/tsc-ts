@@ -1163,7 +1163,7 @@ test('projects reduced from real-world code match tsgo', { skip, timeout: 300_00
           assert.equal(config.extends, undefined, name);
           assert.equal(config.references, undefined, name);
           assert.notEqual(config.compilerOptions.noEmitOnError, true, name);
-          const output = expected.stdout.replace(/\u001b\[[0-9;]*m/g, '');
+          const output = expected.stdout;
           const diagnostics = /\berror TS\d+:/.test(output);
           assert.ok(diagnostics || output.trim() === '', name);
           assert.equal(expected.stderr, '', name);
