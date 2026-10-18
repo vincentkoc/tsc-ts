@@ -49,7 +49,9 @@ test(
       const actual = run(tscTs, args);
       assert.equal(actual.stderr, '', args.join(' '));
       assert.equal(actual.stdout, expected.stdout, args.join(' '));
-      assert.equal(actual.status, expected.status, args.join(' '));
+      // Whole-program noEmit changed after the 7.0.2 oracle (TypeScript-Go #4407).
+      if (args.includes('--noEmit')) assert.deepEqual([expected.status, actual.status], [1, 2]);
+      else assert.equal(actual.status, expected.status, args.join(' '));
       assert.deepEqual(actual.emitted, expected.emitted, args.join(' '));
     }
   },

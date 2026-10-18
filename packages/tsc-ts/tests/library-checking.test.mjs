@@ -12,6 +12,7 @@ import { execFile } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { stripVTControlCharacters } from 'node:util';
 import { tempDir } from './temp.mjs';
 import { tscTs, tscTsMissing } from './toolchain.mjs';
 
@@ -269,6 +270,7 @@ async function compareProjects(t, projectList, variantList) {
     const files = typeof source === 'string' ? { 'a.ts': source } : source;
     for (const variant of variantList) {
       const compilerOptions = { ...base, ...projectOptions, ...variant };
+      assert.equal(compilerOptions.noEmit, true);
       const config = { compilerOptions, files: rootFiles ?? ['a.ts'] };
       runs.push({
         label: `${name} ${JSON.stringify(variant)}`,
@@ -292,7 +294,14 @@ async function compareProjects(t, projectList, variantList) {
           problems.push('stdout ' + firstDifference(expected.stdout, actual.stdout));
         if (expected.stderr !== actual.stderr)
           problems.push('stderr ' + firstDifference(expected.stderr, actual.stderr));
-        if (expected.status !== actual.status) problems.push(`status tsgo ${expected.status}, ours ${actual.status}`);
+        // Every run here has a valid whole-program noEmit config. #4407 changed its error exit.
+        const output = stripVTControlCharacters(expected.stdout);
+        const diagnostics = /\berror TS\d+:/.test(output);
+        assert.ok(diagnostics || output.trim() === '', label);
+        assert.equal(expected.stderr, '', label);
+        assert.equal(actual.stderr, '', label);
+        assert.equal(expected.status, diagnostics ? 1 : 0, label + ': oracle exit');
+        assert.equal(actual.status, diagnostics ? 2 : 0, label + ': candidate exit');
         if (expected.buildInfo !== actual.buildInfo)
           problems.push('build info ' + firstDifference(expected.buildInfo, actual.buildInfo));
         if (problems.length > 0) failures.push(`${label}:\n    ${problems.join('\n    ')}`);

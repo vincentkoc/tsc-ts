@@ -1156,7 +1156,23 @@ test('projects reduced from real-world code match tsgo', { skip, timeout: 300_00
           problems.push(`stdout\n  tsgo: ${expected.stdout}\n  ours: ${actual.stdout}`);
         if (expected.stderr !== actual.stderr)
           problems.push(`stderr\n  tsgo: ${expected.stderr}\n  ours: ${actual.stderr}`);
-        if (expected.status !== actual.status) problems.push(`status tsgo ${expected.status}, ours ${actual.status}`);
+        // The noEmit fixtures have valid root configs and no CLI overrides. Nested -p cases emit.
+        const config = JSON.parse(files['tsconfig.json']);
+        const noEmit = args.length === 0 && config.compilerOptions?.noEmit === true;
+        if (noEmit) {
+          assert.equal(config.extends, undefined, name);
+          assert.equal(config.references, undefined, name);
+          assert.notEqual(config.compilerOptions.noEmitOnError, true, name);
+          const output = expected.stdout;
+          const diagnostics = /\berror TS\d+:/.test(output);
+          assert.ok(diagnostics || output.trim() === '', name);
+          assert.equal(expected.stderr, '', name);
+          assert.equal(actual.stderr, '', name);
+          assert.equal(expected.status, diagnostics ? 1 : 0, name + ': oracle exit');
+          assert.equal(actual.status, diagnostics ? 2 : 0, name + ': candidate exit');
+        } else if (expected.status !== actual.status) {
+          problems.push(`status tsgo ${expected.status}, ours ${actual.status}`);
+        }
         for (const path of new Set([...Object.keys(expected.outputs), ...Object.keys(actual.outputs)]))
           if (expected.outputs[path] !== actual.outputs[path])
             problems.push(`${path}\n  tsgo: ${expected.outputs[path]}\n  ours: ${actual.outputs[path]}`);

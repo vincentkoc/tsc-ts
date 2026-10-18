@@ -402,5 +402,9 @@ test('tsc-ts runs tsc without --api', { skip, timeout: 300_000 }, () => {
       return { status: e.status, stdout: e.stdout.toString() };
     }
   };
-  assert.deepEqual(run(tscTs), run([realTsc]));
+  const expected = run([realTsc]);
+  const actual = run(tscTs);
+  // This is the CLI's erroneous noEmit project, not the API emit surface (#4407).
+  assert.deepEqual([expected.status, actual.status], [1, 2]);
+  assert.equal(actual.stdout, expected.stdout);
 });
