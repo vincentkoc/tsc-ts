@@ -7,7 +7,17 @@ on:
         description: Package targets to verify
         type: choice
         default: all
-        options: [all, linux-x64-gnu]
+        options:
+          [
+            all,
+            darwin-arm64,
+            darwin-x64,
+            linux-arm64-gnu,
+            linux-arm64-musl,
+            linux-x64-gnu,
+            linux-x64-musl,
+            win32-x64-msvc,
+          ]
 
 permissions:
   contents: read
@@ -40,7 +50,6 @@ jobs:
           node --input-type=module <<'NODE'
           import assert from 'node:assert/strict';
           import { appendFileSync } from 'node:fs';
-          assert(['all', 'linux-x64-gnu'].includes(process.env.SCOPE));
           const rows = [
             { platform: 'darwin-arm64', runner: 'macos-15' },
             { platform: 'darwin-x64', runner: 'macos-15-intel' },
@@ -50,6 +59,7 @@ jobs:
             { platform: 'linux-x64-musl', runner: 'ubuntu-24.04', docker: true },
             { platform: 'win32-x64-msvc', runner: 'windows-2025' },
           ];
+          assert(process.env.SCOPE === 'all' || rows.some(row => row.platform === process.env.SCOPE));
           const include = rows.filter(row => process.env.SCOPE === 'all' || row.platform === process.env.SCOPE);
           appendFileSync(process.env.GITHUB_OUTPUT, `value=${JSON.stringify({ include })}\n`);
           NODE
@@ -120,11 +130,12 @@ jobs:
             return result.stdout;
           };
           const name = platform === 'win32-x64-msvc' ? 'tsc-ts.exe' : 'tsc-ts';
-          const members = checked('tar', ['-tzf', native]).trim().split(/\r?\n/);
+          // A Windows drive colon is remote-host syntax to GNU tar; use a local basename.
+          const members = checked('tar', ['-tzf', path.basename(native)], { cwd: out }).trim().split(/\r?\n/);
           assert.equal(new Set(members).size, members.length);
           const libraryNames = members.filter(file => /^package\/lib\/lib(?:\..+)?\.d\.ts$/.test(file)).sort();
-          const member = file => checked('tar', ['-xOf', native, file], {
-            encoding: null, maxBuffer: 32 * 1024 * 1024,
+          const member = file => checked('tar', ['-xOf', path.basename(native), file], {
+            cwd: out, encoding: null, maxBuffer: 32 * 1024 * 1024,
           });
           const libraryManifest = libraryNames.map(file => ({
             name: path.posix.basename(file), sha256: hash(member(file)),
