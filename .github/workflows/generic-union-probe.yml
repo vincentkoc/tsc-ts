@@ -128,7 +128,8 @@ jobs:
           exit $status
       - name: Package and record native identities
         run: |
-          git diff --exit-code
+          # npm bin-links chmods workspace launchers; reject content changes, not that mode normalization.
+          git -c core.filemode=false diff --exit-code
           tar -cf restoration/native.tar packages/tsc-ts/dist/tsc packages/tsc-ts/dist/cli
           node --input-type=module -e '
           import assert from "node:assert/strict";
