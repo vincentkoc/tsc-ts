@@ -1,266 +1,161 @@
-name: Platform proof
+name: Native artifact restoration
 
 on:
   workflow_dispatch:
-    inputs:
-      scope:
-        description: Package targets to verify
-        type: choice
-        default: all
-        options:
-          [
-            all,
-            darwin-arm64,
-            darwin-x64,
-            linux-arm64-gnu,
-            linux-arm64-musl,
-            linux-x64-gnu,
-            linux-x64-musl,
-            win32-x64-msvc,
-          ]
 
 permissions:
   contents: read
 
 concurrency:
-  group: platform-proof-${{ github.ref }}
+  group: native-restoration-${{ github.ref }}
   cancel-in-progress: false
-
-env:
-  SOURCE_SHA: a80cd9190942d16286a8483f1f51d9a68037324f
-  NODE24_IMAGE: node@sha256:21f403ab171f2dc89bad4dd69d7721bfd15f084ccb46cdd225f31f2bc59b5c9a
-  NODE26_IMAGE: node@sha256:e71ac5e964b9201072425d59d2e876359efa25dc96bb1768cb73295728d6e4ea
 
 defaults:
   run:
     shell: bash
 
+env:
+  SOURCE_SHA: a80cd9190942d16286a8483f1f51d9a68037324f
+  EXPECTED_NATIVE_SHA256: 9785e87da1650d3a4007d234bc194c63b640524c010497884e4b93161c7bb149
+
 jobs:
-  plan:
+  native:
     if: github.repository == 'vincentkoc/tsc-ts'
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    outputs:
-      matrix: ${{ steps.matrix.outputs.value }}
-    steps:
-      - id: matrix
-        env:
-          SCOPE: ${{ inputs.scope }}
-        run: |
-          node --input-type=module <<'NODE'
-          import assert from 'node:assert/strict';
-          import { appendFileSync } from 'node:fs';
-          const rows = [
-            { platform: 'darwin-arm64', runner: 'macos-15' },
-            { platform: 'darwin-x64', runner: 'macos-15-intel' },
-            { platform: 'linux-arm64-gnu', runner: 'ubuntu-24.04-arm', target: 'aarch64-linux-gnu.2.34' },
-            { platform: 'linux-arm64-musl', runner: 'ubuntu-24.04-arm', docker: true },
-            { platform: 'linux-x64-gnu', runner: 'ubuntu-24.04', target: 'x86_64-linux-gnu.2.34' },
-            { platform: 'linux-x64-musl', runner: 'ubuntu-24.04', docker: true },
-            { platform: 'win32-x64-msvc', runner: 'windows-2025' },
-          ];
-          assert(process.env.SCOPE === 'all' || rows.some(row => row.platform === process.env.SCOPE));
-          const include = rows.filter(row => process.env.SCOPE === 'all' || row.platform === process.env.SCOPE);
-          appendFileSync(process.env.GITHUB_OUTPUT, `value=${JSON.stringify({ include })}\n`);
-          NODE
-
-  package:
-    name: Package ${{ matrix.platform }}
-    needs: plan
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 180
-    strategy:
-      fail-fast: false
-      max-parallel: 3
-      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    timeout-minutes: 30
     env:
-      PLATFORM: ${{ matrix.platform }}
-      SCRIPTC_TARGET: ${{ matrix.target || '' }}
       PROOF_WORKFLOW_SHA: ${{ github.workflow_sha }}
       PROOF_HEAD: ${{ github.sha }}
       PROOF_RUN_ID: ${{ github.run_id }}
       PROOF_RUN_ATTEMPT: ${{ github.run_attempt }}
-      USE_DOCKER: ${{ matrix.docker || false }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ env.SOURCE_SHA }}
           persist-credentials: false
-      - name: Verify source identity
+      - name: Verify immutable source
         run: |
           test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
-          echo "PROOF_SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')" >> "$GITHUB_ENV"
+          test "$(git rev-parse 'HEAD^{tree}')" = a186687b0b23e4b6718be8daac197c82ae38017c
+          echo '5789f5d900e63da7a53167886af620a0ee290c0543add7eebc0f28c1f4c93049  package-lock.json' | sha256sum --check
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: 24.16.0
-      - uses: vercel-labs/setup-zig@83c1594f26b86da8a9a8ddd9b5ee5f3af0f96943 # v1
-        if: ${{ matrix.platform == 'win32-x64-msvc' || matrix.target }}
-        with:
-          version: 0.16.0
-      - name: Prepare package proof
+          node-version: 24.21.0
+      - name: Install frozen dependencies
         run: |
-          mkdir -p proof
-          cat > proof/check.mjs <<'NODE'
-          import assert from 'node:assert/strict';
-          import { spawnSync } from 'node:child_process';
-          import { createHash } from 'node:crypto';
-          import fs from 'node:fs';
-          import os from 'node:os';
-          import path from 'node:path';
-          import { createRequire } from 'node:module';
-          const root = process.cwd();
-          const platform = process.env.PLATFORM;
-          const version = JSON.parse(fs.readFileSync('packages/tsc-ts/package.json')).version;
-          const out = path.join(root, 'packages/tsc-ts/dist/npm');
-          const main = path.join(out, `tsc-ts-${version}.tgz`);
-          const native = path.join(out, `tsc-ts-${platform}-${version}.tgz`);
-          const hash = bytes => createHash('sha256').update(bytes).digest('hex');
-          const run = (command, args, options = {}) => {
-            const result = spawnSync(command, args, {
-              encoding: 'utf8', timeout: 120000, maxBuffer: 2 * 1024 * 1024,
-              shell: process.platform === 'win32' && ['npm', 'npx'].includes(command),
-              ...options,
-            });
-            assert(!result.error && !result.signal, `${command}: ${result.error?.message ?? result.signal}`);
-            return result;
+          test "$(node --version)" = v24.21.0
+          test "$(npm --version)" = 11.19.0
+          npm ci
+          test "$(node -p 'require("./node_modules/scriptc/package.json").version')" = 0.3.5
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        id: scriptc
+        with:
+          path: ~/.cache/scriptc
+          key: scriptc-Linux-0.3.5
+      - name: Record producer inputs
+        env:
+          SCRIPTC_CACHE_HIT: ${{ steps.scriptc.outputs.cache-hit }}
+        run: |
+          mkdir -p restoration
+          node --input-type=module -e '
+          import assert from "node:assert/strict";
+          import { execFileSync } from "node:child_process";
+          import { createHash } from "node:crypto";
+          import fs from "node:fs";
+          import os from "node:os";
+          import path from "node:path";
+          const hash = bytes => createHash("sha256").update(bytes).digest("hex");
+          const file = name => {
+            const stat = fs.lstatSync(name);
+            assert(stat.isFile() && stat.size <= 512 * 1024 * 1024, "nonregular or oversized input");
+            return { bytes: stat.size, sha256: hash(fs.readFileSync(name)) };
           };
-          const checked = (command, args, options) => {
-            const result = run(command, args, options);
-            assert.equal(result.status, 0, `${command}: ${result.stdout}${result.stderr}`);
-            return result.stdout;
-          };
-          const name = platform === 'win32-x64-msvc' ? 'tsc-ts.exe' : 'tsc-ts';
-          // A Windows drive colon is remote-host syntax to GNU tar; use a local basename.
-          const members = checked('tar', ['-tzf', path.basename(native)], { cwd: out }).trim().split(/\r?\n/);
-          assert.equal(new Set(members).size, members.length);
-          const libraryNames = members.filter(file => /^package\/lib\/lib(?:\..+)?\.d\.ts$/.test(file)).sort();
-          const member = file => checked('tar', ['-xOf', path.basename(native), file], {
-            cwd: out, encoding: null, maxBuffer: 32 * 1024 * 1024,
-          });
-          const libraryManifest = libraryNames.map(file => ({
-            name: path.posix.basename(file), sha256: hash(member(file)),
-          }));
-          const binarySha256 = hash(member(`package/lib/${name}`));
-          const libraryManifestSha256 = hash(JSON.stringify(libraryManifest));
-          const metadata = {
-            sourceSha: process.env.SOURCE_SHA,
-            sourceTree: process.env.PROOF_SOURCE_TREE,
-            workflowSha: process.env.PROOF_WORKFLOW_SHA,
-            workflowHead: process.env.PROOF_HEAD,
-            runId: process.env.PROOF_RUN_ID,
-            runAttempt: process.env.PROOF_RUN_ATTEMPT,
-            platform, node: process.version, nodeBinarySha256: hash(fs.readFileSync(process.execPath)),
-            archives: { launcher: hash(fs.readFileSync(main)), platform: hash(fs.readFileSync(native)) },
-            binarySha256, libraryManifest, libraryManifestSha256,
-            matchesQualifiedNative: binarySha256 === '9785e87da1650d3a4007d234bc194c63b640524c010497884e4b93161c7bb149',
-            matchesQualifiedLibraries: libraryManifestSha256 === 'b13ee3a64a0d52a1bffd5b509cdfd56552444b4295dd258463edf46cb58e9133',
-            checks: [], passed: false,
-          };
-          const project = fs.mkdtempSync(path.join(os.tmpdir(), 'tsc-ts-platform-proof-'));
-          const receipt = path.join(root, 'proof', `node-${process.versions.node}.json`);
-          try {
-            assert(['24.16.0', '26.1.0'].includes(process.versions.node));
-            if (process.versions.node === '26.1.0') {
-              const previous = JSON.parse(fs.readFileSync(path.join(root, 'proof/node-24.16.0.json')));
-              assert.deepEqual(metadata.archives, previous.archives);
-              assert.equal(binarySha256, previous.binarySha256);
-              assert.equal(libraryManifestSha256, previous.libraryManifestSha256);
-            }
-            fs.writeFileSync(path.join(project, 'package.json'), JSON.stringify({ private: true, type: 'module' }));
-            checked('npm', ['install', '--offline', '--ignore-scripts', '--no-audit', '--no-fund', main, native], { cwd: project });
-            const require = createRequire(path.join(project, 'package.json'));
-            const installedRoot = path.dirname(require.resolve(`@tsc-ts/${platform}/package.json`));
-            assert.equal(hash(fs.readFileSync(path.join(installedRoot, 'lib', name))), binarySha256);
-            const launcher = path.join(project, 'node_modules/tsc-ts/bin/tsc-ts.js');
-            const invoke = args => run(process.execPath, [launcher, ...args], { cwd: project });
-            const versionResult = invoke(['--version']);
-            metadata.checks.push({ name: 'version', status: versionResult.status, stdout: versionResult.stdout, stderr: versionResult.stderr });
-            assert.equal(versionResult.status, 0);
-            assert.equal(versionResult.stdout.trim(), 'Version 7.0.2');
-            assert.equal(versionResult.stderr, '');
-            for (const target of ['default', 'ES2022', 'ES2025']) {
-              fs.writeFileSync(path.join(project, 'input.ts'), 'export const value: number = 1;\n');
-              const outDir = `out-${target}`;
-              fs.rmSync(path.join(project, outDir), { recursive: true, force: true });
-              const args = ['--pretty', 'false', '--strict', ...(target === 'default' ? [] : ['--target', target]), '--module', 'CommonJS', '--outDir', outDir, 'input.ts'];
-              const clean = invoke(args);
-              metadata.checks.push({ name: `${target}-clean`, status: clean.status, stdout: clean.stdout, stderr: clean.stderr });
-              assert.equal(clean.status, 0, `${target}: ${clean.stdout}${clean.stderr}`);
-              assert.equal(clean.stdout, '');
-              assert.equal(clean.stderr, '');
-              assert(fs.readFileSync(path.join(project, outDir, 'input.js'), 'utf8').includes('value'));
-              fs.writeFileSync(path.join(project, 'input.ts'), 'export const value: number = "bad";\n');
-              const invalid = invoke(args);
-              metadata.checks.push({ name: `${target}-invalid`, status: invalid.status, stdout: invalid.stdout, stderr: invalid.stderr });
-              assert.equal(invalid.status, 2);
-              assert.deepEqual([...invalid.stdout.matchAll(/error TS(\d+):/g)].map(match => Number(match[1])), [2322]);
-              assert.equal(invalid.stderr, '');
-            }
-            metadata.passed = true;
-          } finally {
-            for (const check of metadata.checks) {
-              for (const stream of ['stdout', 'stderr']) {
-                check[stream] = check[stream].split(project).join('<project>').split(root).join('<source>');
+          const cacheRoot = path.join(os.homedir(), ".cache/scriptc");
+          const cacheManifest = [];
+          let cacheBytes = 0;
+          let entries = 0;
+          const walk = (directory, prefix = "") => {
+            for (const entry of fs.readdirSync(directory, { withFileTypes: true }).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0)) {
+              assert(++entries <= 8192, "cache inventory limit");
+              const relative = prefix + entry.name;
+              const name = path.join(directory, entry.name);
+              if (entry.isDirectory()) walk(name, relative + "/");
+              else {
+                const identity = file(name);
+                cacheBytes += identity.bytes;
+                assert(cacheBytes <= 8 * 1024 ** 3, "cache byte limit");
+                cacheManifest.push({ name: relative, ...identity });
               }
             }
-            fs.writeFileSync(receipt, JSON.stringify(metadata, null, 2) + '\n');
-            fs.rmSync(project, { recursive: true, force: true });
-          }
-          NODE
-      - name: Build packages on Node 24.16
-        if: ${{ !matrix.docker }}
+          };
+          if (fs.existsSync(cacheRoot)) walk(cacheRoot);
+          const scriptcPackage = "node_modules/@scriptc/cli-linux-x64-gnu/package.json";
+          const scriptc = JSON.parse(fs.readFileSync(scriptcPackage));
+          assert.equal(scriptc.version, "0.3.5");
+          const scriptcBinary = file("node_modules/@scriptc/cli-linux-x64-gnu/dist/bin/scriptc");
+          const installedScriptc = file("node_modules/scriptc/bin/scriptc.exe");
+          assert.deepEqual(installedScriptc, scriptcBinary);
+          const receipt = {
+            sourceSha: process.env.SOURCE_SHA,
+            sourceTree: "a186687b0b23e4b6718be8daac197c82ae38017c",
+            lock: file("package-lock.json"),
+            workflowSha: process.env.PROOF_WORKFLOW_SHA, workflowHead: process.env.PROOF_HEAD,
+            runId: process.env.PROOF_RUN_ID, runAttempt: process.env.PROOF_RUN_ATTEMPT,
+            runner: { imageOS: process.env.ImageOS, imageVersion: process.env.ImageVersion, kernel: os.release(), architecture: os.arch() },
+            node: { version: process.version, ...file(process.execPath) },
+            npm: { version: execFileSync("npm", ["--version"], { encoding: "utf8" }).trim(), ...file(fs.realpathSync(execFileSync("which", ["npm"], { encoding: "utf8" }).trim())) },
+            scriptc: { version: scriptc.version, package: file(scriptcPackage), binary: scriptcBinary, installedBinary: installedScriptc },
+            cache: { key: "scriptc-Linux-0.3.5", hit: process.env.SCRIPTC_CACHE_HIT === "true", files: cacheManifest.length, bytes: cacheBytes, manifest: cacheManifest, manifestSha256: hash(JSON.stringify(cacheManifest)) },
+            execution: { plannedScriptcBuilds: 2, producedCompilerExecutions: 0, dependencySetupHooks: "npm ci" },
+            expectedNativeSha256: process.env.EXPECTED_NATIVE_SHA256,
+            libraries: "External 108-library b13 manifest is independently restored; not bundled or requalified here.",
+          };
+          const serialized = JSON.stringify(receipt, null, 2) + "\n";
+          assert(Buffer.byteLength(serialized) <= 2 * 1024 * 1024, "receipt byte limit");
+          fs.writeFileSync("restoration/receipt.json", serialized);
+          '
+      # Preserve the original producer commands and join both workers before packaging.
+      - name: Build the two native entries
+        working-directory: packages/tsc-ts
         run: |
-          test "$(node --version)" = v24.16.0
-          npm ci
-          npm run pack:npm -w tsc-ts
-      - name: Build musl packages on Node 24.16
-        if: ${{ matrix.docker }}
+          npm run build:native > "$RUNNER_TEMP/tsc.log" 2>&1 &
+          tsc=$!
+          npx scriptc build src/drivers/cli.ts --optimization=speed --no-keep-llvm -o dist/cli > "$RUNNER_TEMP/cli.log" 2>&1 &
+          cli=$!
+          status=0
+          wait $tsc || { status=1; cat "$RUNNER_TEMP/tsc.log"; }
+          wait $cli || { status=1; cat "$RUNNER_TEMP/cli.log"; }
+          exit $status
+      - name: Package and record native identities
         run: |
-          docker run --rm -v "$PWD:/repo" -w /repo \
-            -e PLATFORM -e SOURCE_SHA -e PROOF_SOURCE_TREE -e PROOF_WORKFLOW_SHA -e PROOF_HEAD -e PROOF_RUN_ID -e PROOF_RUN_ATTEMPT \
-            "$NODE24_IMAGE" sh -ec 'test "$(node --version)" = v24.16.0; apk add --no-cache clang lld musl-dev zig; npm ci; npm run pack:npm -w tsc-ts'
-      - name: Check packaged launcher on Node 24.16
-        id: node24
-        continue-on-error: true
-        run: |
-          if [[ "$USE_DOCKER" == true ]]; then
-            docker run --rm -v "$PWD:/repo" -w /repo \
-              -e PLATFORM -e SOURCE_SHA -e PROOF_SOURCE_TREE -e PROOF_WORKFLOW_SHA -e PROOF_HEAD -e PROOF_RUN_ID -e PROOF_RUN_ATTEMPT \
-              "$NODE24_IMAGE" sh -ec 'test "$(node --version)" = v24.16.0; node proof/check.mjs'
-          else
-            test "$(node --version)" = v24.16.0
-            node proof/check.mjs
-          fi
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        if: ${{ !matrix.docker }}
-        with:
-          node-version: 26.1.0
-      - name: Check the same archives on Node 26.1
-        id: node26
-        continue-on-error: true
-        run: |
-          if [[ "$USE_DOCKER" == true ]]; then
-            docker run --rm -v "$PWD:/repo" -w /repo \
-              -e PLATFORM -e SOURCE_SHA -e PROOF_SOURCE_TREE -e PROOF_WORKFLOW_SHA -e PROOF_HEAD -e PROOF_RUN_ID -e PROOF_RUN_ATTEMPT \
-              "$NODE26_IMAGE" sh -ec 'test "$(node --version)" = v26.1.0; node proof/check.mjs'
-          else
-            test "$(node --version)" = v26.1.0
-            node proof/check.mjs
-          fi
-      - name: Require both runtime proofs
-        if: ${{ !cancelled() }}
-        env:
-          NODE24_RESULT: ${{ steps.node24.outcome }}
-          NODE26_RESULT: ${{ steps.node26.outcome }}
-        run: |
-          test "$NODE24_RESULT" = success
-          test "$NODE26_RESULT" = success
+          git diff --exit-code
+          tar -cf restoration/native.tar packages/tsc-ts/dist/tsc packages/tsc-ts/dist/cli
+          node --input-type=module -e '
+          import assert from "node:assert/strict";
+          import { createHash } from "node:crypto";
+          import fs from "node:fs";
+          const file = name => {
+            const stat = fs.lstatSync(name);
+            assert(stat.isFile() && stat.size > 0 && stat.size <= 64 * 1024 * 1024);
+            return { bytes: stat.size, sha256: createHash("sha256").update(fs.readFileSync(name)).digest("hex") };
+          };
+          const receipt = JSON.parse(fs.readFileSync("restoration/receipt.json"));
+          receipt.outputs = { tsc: file("packages/tsc-ts/dist/tsc"), cli: file("packages/tsc-ts/dist/cli"), tar: file("restoration/native.tar") };
+          receipt.matchesQualifiedNative = receipt.outputs.tsc.sha256 === receipt.expectedNativeSha256;
+          fs.writeFileSync("restoration/receipt.json", JSON.stringify(receipt, null, 2) + "\n");
+          console.log(JSON.stringify(receipt.outputs));
+          '
+      # Retain mismatch evidence before the identity gate; never promote different bytes.
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
-          name: platform-proof-${{ matrix.platform }}
+          name: native-restoration
           path: |
-            proof/*.json
-            packages/tsc-ts/dist/npm/*.tgz
+            restoration/native.tar
+            restoration/receipt.json
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 30
+          compression-level: 1
+      - name: Require the qualified native identity
+        run: |
+          node -e 'const assert = require("node:assert/strict"); const receipt = require("./restoration/receipt.json"); assert.equal(receipt.outputs.tsc.sha256, process.env.EXPECTED_NATIVE_SHA256); assert.equal(receipt.matchesQualifiedNative, true);'
